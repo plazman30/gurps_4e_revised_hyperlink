@@ -30,9 +30,28 @@ detection logic isn't hardcoded to that book specifically.
 
 ## Installation
 
-Pick your operating system below. Either path ends in the same place — a
-folder with this repo in it and Python ready to go — then skip to
-**Usage**.
+**Easiest option: double-click setup.** This repo includes a setup script
+that does everything below for you automatically.
+
+- **macOS**: double-click `setup.command`.
+- **Windows**: double-click `setup.bat`.
+
+First time running it, your OS will probably show a security warning since
+it's not a signed/notarized app (this is normal for scripts downloaded from
+GitHub, not a sign anything's wrong):
+- **macOS**: right-click `setup.command` → **Open** → then click **Open**
+  again in the dialog that pops up. (Only needed the first time —
+  double-clicking normally works after that.)
+- **Windows**: if SmartScreen blocks it, click **More info** → **Run
+  anyway**.
+
+The script installs Python (and Homebrew, on macOS, if you don't have it)
+and the one required package, then tells you the command to run the tool
+itself. If it fails partway through, the manual steps below explain what
+it's doing and why, which makes it easier to spot where things went wrong.
+
+<details>
+<summary><strong>Manual setup instead (click to expand)</strong></summary>
 
 ### macOS
 
@@ -152,6 +171,8 @@ You're set up. Move on to **Usage** below — but on Windows, use `python`
 instead of `python3` in the commands (Windows' installer doesn't create a
 `python3` alias the way macOS/Linux do).
 
+</details>
+
 ## Usage
 
 ```
@@ -178,6 +199,7 @@ carefully.
 
 | Script | What it's for |
 |---|---|
+| `setup.command` / `setup.bat` | One-click installer (macOS / Windows) — see **Installation** above. |
 | `crop_to_center.py` | Optional preprocessing: crops uneven left/right margins so text is centered on the page. Not needed for hyperlinking — only useful if you're starting from a raw scan/export with inconsistent margins. Preserves page labels, existing links, and metadata (a plain `pypdf`-based crop won't). |
 | `unlinked_report.py` | Audits an *already-linked* PDF and reports every reference-looking piece of text that still has no link, with a best guess at why (out of range / looks like a different book / genuinely unexplained). Good for double-checking a run before calling it done. |
 | `remove_cross_book_links.py` | Cleanup pass for an existing file: finds and removes any link that was wrongly created for a different-book reference. |
