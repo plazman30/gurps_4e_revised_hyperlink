@@ -23,11 +23,12 @@ without linking a reference that's actually citing a *different* book.
 
 | File | Purpose |
 |---|---|
-| `hyperlink_pdf.py` | **The stable, verified version.** Links `p. NNN` / `pp. NNN-NNN` page references (body text) and Index-style bare numbers (`Term, 24.`). Standalone — run directly on any copy of the PDF. |
-| `hyperlink_pdf_v2_chapters.py` | Everything `hyperlink_pdf.py` does, plus links explicit `Chapter N` / `Chapters N-M` references to that chapter's opening page. Newer, less battle-tested than the base version — keep as a separate file rather than merging until it's proven equally solid. |
+| `hyperlink_pdf_universal.py` | **Current active development version — start here.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. **Next planned step (not yet done): testing against non-GURPS PDFs** — see "GURPS-specific vs. generic" below for what's known to be hardcoded. |
+| `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
+| `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
 | `crop_to_center.py` | Unrelated preprocessing tool: crops mismatched left/right margins so text is centered. Not required for hyperlinking; only relevant if starting from a raw, uncropped scan/export. |
 | `extract_links.py` / `apply_links.py` | A manifest-based pair for migrating a verified set of links from one copy of a book onto a *different* copy (e.g. a differently-cropped or differently-compressed export of the same content). Not part of the normal hyperlinking workflow — only useful if you have a known-good hyperlinked file and need to transplant its links elsewhere. |
-| `remove_cross_book_links.py` | Standalone cleanup pass: scans an *already-linked* PDF and removes any link that was wrongly created for a different-book reference. Useful if `hyperlink_pdf.py`'s cross-book filter is later found to have missed a case. |
+| `remove_cross_book_links.py` | Standalone cleanup pass: scans an *already-linked* PDF and removes any link that was wrongly created for a different-book reference. Useful if the cross-book filter is later found to have missed a case. |
 | `unlinked_report.py` | Audits a PDF and reports every reference-shaped piece of text that has no link, classified by likely reason (out of range / other-book title nearby / unexplained). The "unexplained" bucket is the useful one — anything there is probably a real gap. |
 
 ## Core architecture
@@ -39,21 +40,47 @@ without linking a reference that's actually citing a *different* book.
   document. This is robust to a handful of noisy/wrong footer reads but will
   need re-thinking for a book with a fundamentally different numbering
   scheme (e.g. per-chapter restarts).
-- **The Table of Contents is never explicitly detected or special-cased.**
-  It's protected implicitly: before inserting any link, the code checks
-  whether that spot is already linked, and a publisher's native TOC already
-  has its own correct links. This is simpler and more robust than trying to
-  identify "TOC pages" by structure.
+- **The Table of Contents is protected implicitly, and self-hyperlinked if
+  it appears to lack links entirely.** Protection: before inserting any
+  link anywhere in the book, the code checks whether that spot is already
+  linked, and a publisher's native TOC already has its own correct links,
+  so nothing needs to know "this is TOC, don't touch it" as a special case.
+  Self-linking (added later, in `hyperlink_pdf_universal.py` only):
+  `toc_already_hyperlinked()` compares how many TOC lines look like
+  dot-leader entries (ending in a bare page number) against how many links
+  actually exist on those pages — if links cover less than half the
+  apparent entries, the TOC is treated as unlinked and every dot-leader
+  entry's trailing page number gets its own link. Confirmed necessary in
+  practice: GURPS Space ships with a TOC that has *some* links (8) but is
+  overwhelmingly unlinked (250 candidate entries) — a hardcoded "0 links
+  means unlinked" check would have missed it.
 - **The Index** *is* explicitly detected, via a footer/header word match
   (default: "index"), because it needs a different reference grammar (bare
   `Term, 24.` numbers, not `p. NNN`) and applying that grammar to ordinary
   body text would cause massive false-linking of unrelated numbers.
-- **Cross-book reference detection** looks for a trigger word (default
-  `"gurps"`) followed by a run of words that looks like a product title
-  (capitalized or digit-starting, common connectors like "and"/"of" allowed,
-  no embedded sentence-ending punctuation) sitting immediately before a
-  reference. This is what stops "GURPS Powers, p. 40" from linking into
-  *this* book's own page 40.
+- **Cross-book reference detection has three independent layers**, tried in
+  order, each catching a citation style the others miss:
+  1. **Trigger word + title span**: a trigger word (auto-detected from the
+     PDF's own title metadata — see bug #14 below — falling back to
+     `"gurps"`) followed by a run of words that looks like a product title
+     stops "GURPS Powers, p. 40" from linking into *this* book's own
+     page 40.
+  2. **GURPS book-code shorthand**: `p. B123` / `p. MA45` — a short
+     all-caps letter code glued directly to the page number is GURPS's own
+     formal citation convention for referencing a *different* book (`B` =
+     Basic Set, `MA` = Martial Arts, etc.). Any such code is always treated
+     as cross-book, regardless of which letter — deliberately not trying to
+     detect "this book's own code" and allow self-references through it,
+     since a missed same-book link is a much smaller problem than a
+     wrongly-linked cross-book one.
+  3. **Known-title allowlist for bare italicized citations**: some books
+     cite their own parent/related book by name alone, no "GURPS" prefix
+     (e.g. "High-Tech, pp. 13-15" inside a High-Tech supplement, since
+     repeating "GURPS" would be redundant in context). Matched against a
+     small hardcoded list, `KNOWN_GURPS_TITLES` — **not** against "is this
+     phrase absent from the book's own vocabulary," which was tried first
+     and produced 85 false positives on a single 55-page book (see bug #11
+     for why that approach was abandoned).
 
 ## Known bugs already found and fixed — do not reintroduce these
 
@@ -167,6 +194,101 @@ first.
     detach, then poll for completion — confirmed this survives across
     separate tool invocations where plain backgrounding does not.
 
+13. **A PyMuPDF/MuPDF corruption found while building the TOC-hyperlinking
+    feature: inserting a large number of links (100+) across multiple
+    pages in one session, on pages that previously had a large number of
+    REAL links removed via `delete_link()` followed by a full
+    `doc.save(garbage=3, deflate=True)` rewrite, can cause `get_links()`
+    to return IDENTICAL link lists (same xrefs) for multiple different
+    pages when the file is reopened.** Confirmed reproducible:
+    `page4.get_links() == page5.get_links()` literally `True`, same xref
+    numbers. Isolated testing narrowed this to specifically requiring the
+    delete-then-full-rewrite step beforehand; the identical high-density
+    multi-page insertion pattern on pages that never had links at all
+    (verified via a from-scratch synthetic test PDF, and via pristine
+    untouched pages of a real book) works correctly with no corruption.
+    This pipeline never calls `delete_link()` anywhere in its own normal
+    operation, so this shouldn't be triggerable through ordinary use —
+    but if a future feature ever needs to strip and re-add a large batch
+    of existing links in one session, re-verify this specifically before
+    trusting the result, using the same `page[a].get_links() ==
+    page[b].get_links()` identity check that caught it here. **Update:**
+    validated against a real never-linked TOC (GURPS Space) with no
+    duplication whatsoever — this was confirmed to be an artifact of the
+    test methodology (deleting a large batch of real links, not a
+    genuinely-never-linked page), not a real-world risk.
+
+14. **The `search_for()` glue-trim refinement (bug #9's fix) was
+    originally added only for chapter references, then extended to plain
+    `p. NNN` page references — and that extension immediately introduced
+    a regression identical in spirit to bug #10.** The refinement probe
+    was built from the single page number only (`"p. 10"`), and since
+    that's a literal text *prefix* of a range like `"pp. 10-11)"`,
+    `search_for` happily matched it — truncating every single range
+    reference in the book to just its first number. Same root cause and
+    same fix as #10 (try the full range text first), just needed
+    reapplying at the new call site. **Lesson that generalizes: when
+    copying a fix from one code path to a structurally similar one,
+    re-derive whether the ordering/precedence assumptions the original fix
+    depended on actually transferred — they silently didn't here.**
+
+15. **A single PDF "word" can have a genuinely broken bounding box
+    reported by PyMuPDF itself**, not caused by anything in this
+    pipeline's own logic. Found in testing: an image caption's text run
+    with an unusual transform matrix produced a word (`"p. 516.)Picture"`)
+    whose bbox spanned an entire page column (from PyMuPDF's own
+    `get_text("words")` output, not something this code constructed).
+    Not fixable at the source. Mitigated with `is_reasonable_link_rect()`
+    — a safety net that refuses to insert any link taller than ~3 lines or
+    wider than ~90% of the page, applied at every `insert_link` call site.
+    Rare (found exactly once across two full books), but the check is
+    cheap and worth keeping as defense-in-depth against the next
+    never-seen-before anomaly like it, not just this specific one.
+
+16. **Chapter-list references aren't always a single number or a 2-number
+    range/pair — GURPS also writes genuine comma-separated lists**, e.g.
+    "Chapters 2, 4, and 6". The original chapter-number detection only
+    handled `Chapter N` and `Chapters N-M`/`N and M`; a list like this
+    would silently link only the first number and drop the rest. Fixed by
+    extending detection to walk arbitrary comma/and-separated sequences,
+    where each number after the first is its own standalone word token
+    and gets linked to its own chapter individually (the first number
+    still gets the original combined-rect/line-wrap-safe treatment; only
+    the *additional* list members use a simpler individual-word rect).
+
+17. **The "is this italicized phrase part of this book's own vocabulary"
+    approach for catching bare (no "GURPS" prefix) other-book citations
+    was tried, and abandoned, for the same reason as bug #11 — false
+    positives.** Built a vocabulary from the book's own TOC + Index and
+    flagged any italicized phrase before a reference that wasn't in it.
+    Tested against a real 55-page supplement: 87 flags, ~85 false
+    positives — same-book cross-reference headings ("Wet Cell,"
+    "Secondary Batteries") that exist in body text as bolded run-in
+    headers but aren't fully captured by the formal TOC/Index, so
+    "unrecognized" wrongly meant "must be some other book." Replaced with
+    a small explicit allowlist of real GURPS product titles
+    (`KNOWN_GURPS_TITLES`). Necessarily incomplete, but that's the safe
+    failure direction — an unlisted title just falls through as same-book
+    (a missed skip) rather than wrongly blocking a real same-book link.
+    Result on the same book: 17 flags, all genuine, zero false positives.
+    **The general lesson repeated across bugs #11 and #17: "flag anything
+    that doesn't match a known-good set" sounds more thorough than "flag
+    only a known-bad set," but in practice the known-good set is never as
+    complete as it looks, and incompleteness there is silent and harmful —
+    while incompleteness in a known-bad allowlist just means an occasional
+    missed catch, which is easy to extend later from a real example.**
+
+18. **The cross-book trigger word (bug list item in "Core architecture")
+    is auto-detected from the PDF's own `/Info Title` metadata** (first
+    non-stopword, e.g. "GURPS High-Tech: Electricity and Electronics" →
+    `"gurps"`) rather than hardcoded, specifically so the tool adapts to
+    non-GURPS books without editing the script. Falls back to `"gurps"`
+    with a printed warning if the PDF has no usable title — that fallback
+    will be *wrong* (not just unhelpful) for a non-GURPS book with no
+    title metadata, so if cross-book filtering looks broken on a new book,
+    check the startup print line for what trigger word was actually used
+    before assuming the detection logic itself is at fault.
+
 ## Testing / verification methodology
 
 - **Don't trust `page.get_links()[i]['page']` as ground truth** (see bug #3
@@ -229,18 +351,43 @@ PDF in-repo:
   break, a narrow-space-glued trailing token, a hyphenated line-wrap mid-word,
   a "Chapters N-M" range, a fake native TOC link to confirm it's left alone,
   etc.) — none of that requires any real GURPS content, since the bugs are
-  all structural, not content-specific.
+  all structural, not content-specific. **This isn't just a theoretical
+  suggestion**: building a minimal synthetic PDF from scratch (cover page +
+  Contents page + numbered body pages, via `fitz.open()` /
+  `doc.new_page()` / `page.insert_text()`) was what actually isolated bug
+  #13 — it definitively separated "real bug in our logic" from "artifact
+  of a flawed test setup" when a real book wasn't available to test the
+  exact scenario needed.
 
-
+## Known open limitations (not yet fixed, low priority)
 
 - A reference back into the roman-numeral front matter (e.g. "see p. iv")
   is silently skipped — the range validator only understands arabic
   numbers. Rare enough (one known instance) that it hasn't been worth the
   added complexity of a dual numbering system.
-- Cross-book detection depends on the trigger word `TITLE_TRIGGER_WORD`
-  (default `"gurps"`) and assumes titles are capitalized/title-cased
-  immediately after it. A book that abbreviates its own line's name
-  differently will need this adjusted.
+- Cross-book detection's trigger word is now auto-detected from title
+  metadata (see bug #18) rather than hardcoded, but the *title-shape*
+  assumption after it (capitalized/title-cased words, common connectors
+  allowed) is still fixed. A book that cites other titles in a
+  differently-cased or differently-punctuated style may need
+  `looks_like_title_span()` adjusted.
 - Chapter extraction assumes the TOC's top-level entries are lines whose
   *first word* is a lone `"N."` token — this matches GURPS's convention but
   isn't a universal PDF/TOC standard.
+- TOC-page detection assumes the word "Contents" appears in the page's
+  footer/header band (same pattern as Index detection). A book that labels
+  it differently, or puts the label somewhere other than the footer band,
+  won't be recognized as having a TOC at all — meaning both chapter
+  extraction *and* the TOC self-hyperlinking feature would silently find
+  nothing to do, without erroring.
+- **Not yet tested against a non-GURPS book, as of this writing.** Known
+  GURPS-specific assumptions that will need real testing (not guessing) to
+  know what actually breaks: the `p.`/`pp.` abbreviation-only reference
+  grammar (a publisher who writes "page" in full won't match at all), the
+  `KNOWN_GURPS_TITLES` allowlist (irrelevant, harmlessly inert, for a
+  different publisher), the book-code shorthand check (same — harmlessly
+  inert elsewhere), and the "N." chapter/TOC conventions above. None of
+  these should *break* on a non-GURPS book — worst case they just find
+  zero matches for that particular feature — but that also means zero
+  cross-book protection for whatever citation style a different publisher
+  actually uses, which is the thing most worth verifying first.

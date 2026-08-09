@@ -1,32 +1,49 @@
-# PDF Reference Hyperlinker
+# GURPS PDF Reference Hyperlinker
 
 Automatically turns in-text page and chapter references in a PDF sourcebook
 ("see p. 208," "Chapters 11-13," an index entry like "Accents, 24.") into
 clickable hyperlinks that jump straight to the right page — no manual
 clicking through the table of contents, no external app.
 
-Built and tested against GURPS Basic Set, Fourth Edition Revised, but the
-detection logic isn't hardcoded to that book specifically.
+Built and tested against GURPS Basic Set, Fourth Edition Revised (and, for
+some features, GURPS High-Tech: Electricity and Electronics and GURPS
+Space). **This tool is GURPS-specific** — the reference grammar it looks
+for (`p.`/`pp.` abbreviations, `Chapter N` wording, GURPS's book-code
+shorthand, a hardcoded list of GURPS product titles) matches GURPS's own
+conventions, and it has not been tested against a PDF from any other RPG
+publisher. It may partially work on a non-GURPS book (or it may silently
+find nothing), but that hasn't been verified — see **Limitations** below.
 
 ## What it does
+
+The current, actively developed script is `hyperlink_pdf_universal.py` —
+that's the one to use unless you have a specific reason to reach for one of
+the older scripts described further down. It:
 
 - Finds `p. NNN` / `pp. NNN-NNN` style page references in body text and
   links them to the actual page.
 - Finds Index-style bare number references (`Term, 24.`, `Term, 418-425.`)
   and links those too, including ranges that word-wrap across a line break.
-- Optionally (see `hyperlink_pdf_v2_chapters.py`) finds explicit chapter
-  references ("see Chapter 6," "Chapters 11-13") and links them to that
-  chapter's opening page.
-- **Leaves a book's existing Table of Contents alone.** If a spot already
-  has a working link, nothing new gets added there — this is how the native
-  TOC survives untouched without the script needing to know anything about
-  where the TOC is.
+- Finds explicit chapter references ("see Chapter 6," "Chapters 11-13,"
+  "Chapters 2, 4, and 6") and links them to that chapter's opening page.
+- Recognizes GURPS's own book-code shorthand (`p. B123`, `p. MA45`) as a
+  reference to a *different* book, and skips linking it into this one.
+- Recognizes a handful of known GURPS product titles cited bare, without
+  the word "GURPS" in front (e.g. "High-Tech, pp. 13-15" inside a
+  High-Tech supplement), and skips those too.
+- **Leaves a book's existing Table of Contents alone**, and can add links
+  to one that doesn't have any — if a TOC's dot-leader entries are mostly
+  unlinked, it hyperlinks each one's trailing page number itself.
 - **Tries not to link references to a *different* book.** A citation like
   "GURPS Powers, p. 40" won't get linked into *this* book's own page 40,
-  even though "40" is a valid page number here too.
-- Writes a CSV report alongside the output PDF listing every reference
+  even though "40" is a valid page number here too. The trigger word for
+  this ("GURPS") is auto-detected from the PDF's own title metadata, not
+  hardcoded, so it's not strictly limited to GURPS books.
+- Writes a CSV report alongside each output PDF listing every reference
   found, whether it got linked, and why not if it didn't — so you can
   spot-check the results instead of trusting a bare "N links added" count.
+- Can process a single PDF, or an entire folder of them at once (see
+  **Batch-processing a folder** below).
 
 ## Installation
 
@@ -175,8 +192,10 @@ instead of `python3` in the commands (Windows' installer doesn't create a
 
 ## Usage
 
+### Single file
+
 ```
-python3 hyperlink_pdf.py YourBook.pdf YourBook_linked.pdf
+python3 hyperlink_pdf_universal.py YourBook.pdf YourBook_linked.pdf
 ```
 
 *(Windows: use `python` instead of `python3`.)*
@@ -184,21 +203,50 @@ python3 hyperlink_pdf.py YourBook.pdf YourBook_linked.pdf
 *(If you downloaded a ZIP instead of using git, make sure `YourBook.pdf` is
 either in that same folder, or type the full path to wherever it's saved.)*
 
-That's it — page numbering, the Index section, and everything else needed
-is auto-detected from the file itself; nothing needs to be configured for
-a specific book. It writes `YourBook_linked_link_report.csv` alongside the
-output with a full log of what happened.
+That's it — page numbering, the Index section, chapter list, and
+everything else needed is auto-detected from the file itself; nothing
+needs to be configured for a specific book. It writes
+`YourBook_linked_link_report.csv` alongside the output with a full log of
+what happened.
 
-**Chapter references too?** Use `hyperlink_pdf_v2_chapters.py` the same
-way. It does everything above plus chapter-number linking. Kept as a
-separate script rather than merged into the main one because it's newer
-and less extensively tested — try it, but check the report a bit more
-carefully.
+### Batch-processing a folder
+
+To process every PDF in a folder in one go, use `--batch` with the folder
+path instead of an input/output file pair:
+
+```
+python3 hyperlink_pdf_universal.py --batch YourBooks/
+```
+
+This creates a new folder called `YourBooks-hyperlinked/` *next to*
+`YourBooks/` (not inside it), and writes one linked PDF plus one CSV report
+into it for every PDF found directly inside `YourBooks/`.
+
+Two optional flags:
+
+- **`--recursive`** (alias `--recursives`) — also look inside subfolders of
+  `YourBooks/`, not just the top level. The same subfolder layout is
+  recreated inside `YourBooks-hyperlinked/`.
+- **`--rename`** — append `-hyperlinked` to each output filename (e.g.
+  `Basic Set.pdf` → `Basic Set-hyperlinked.pdf`) instead of keeping the
+  original name. Useful if you'll be moving files back out of the
+  per-folder structure later and want the filename itself to say what
+  happened to it.
+
+```
+python3 hyperlink_pdf_universal.py --batch --recursive --rename YourBooks/
+```
+
+A PDF that fails partway through (e.g. one with no readable page numbers
+in its footers) doesn't stop the rest of the batch — it's reported and
+skipped, and everything else still gets processed.
 
 ### Other scripts in here
 
 | Script | What it's for |
 |---|---|
+| `hyperlink_pdf.py` | The original, more limited version — page and Index references only, no chapters, no batch mode. Kept as a known-good fallback if `hyperlink_pdf_universal.py` ever regresses on a book it used to handle. |
+| `hyperlink_pdf_v2_chapters.py` | An intermediate version between the two above. Superseded by `hyperlink_pdf_universal.py` — no reason to reach for this one now. |
 | `setup.command` / `setup.bat` | One-click installer (macOS / Windows) — see **Installation** above. |
 | `crop_to_center.py` | Optional preprocessing: crops uneven left/right margins so text is centered on the page. Not needed for hyperlinking — only useful if you're starting from a raw scan/export with inconsistent margins. Preserves page labels, existing links, and metadata (a plain `pypdf`-based crop won't). |
 | `unlinked_report.py` | Audits an *already-linked* PDF and reports every reference-looking piece of text that still has no link, with a best guess at why (out of range / looks like a different book / genuinely unexplained). Good for double-checking a run before calling it done. |
@@ -207,6 +255,13 @@ carefully.
 
 ## Limitations (read before trusting the output blindly)
 
+- **Not tested on any non-GURPS publisher's PDF.** Everything above has
+  only been verified against actual GURPS books. The `p.`/`pp.` and
+  `Chapter N` reference styles, the GURPS book-code shorthand, and the
+  hardcoded GURPS product-title list are all GURPS conventions — a
+  different publisher's book may use different wording entirely (e.g.
+  spelling out "page" or "chapter six" instead), in which case this tool
+  would likely find few or no references to link, without erroring.
 - **It can't perfectly tell "this page number is in my own book" from "this
   page number happens to match, but the sentence is citing a different
   book."** The cross-book filter catches the common phrasing ("GURPS
