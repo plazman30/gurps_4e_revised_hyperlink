@@ -30,7 +30,7 @@ without linking a reference that's actually citing a *different* book.
 | `extract_links.py` / `apply_links.py` | A manifest-based pair for migrating a verified set of links from one copy of a book onto a *different* copy (e.g. a differently-cropped or differently-compressed export of the same content). Not part of the normal hyperlinking workflow — only useful if you have a known-good hyperlinked file and need to transplant its links elsewhere. |
 | `remove_cross_book_links.py` | Standalone cleanup pass: scans an *already-linked* PDF and removes any link that was wrongly created for a different-book reference. Useful if the cross-book filter is later found to have missed a case. |
 | `unlinked_report.py` | Audits a PDF and reports every reference-shaped piece of text that has no link, classified by likely reason (out of range / other-book title nearby / unexplained). The "unexplained" bucket is the useful one — anything there is probably a real gap. |
-| `combine_books.py` | Unrelated preprocessing tool, uses `pypdf` not PyMuPDF: merges the GURPS Basic Set, 4E Characters and Campaigns PDFs into one file (deletes a few cut-content pages, splices the two front matters/TOCs together, moves both books' `II` pages to the end, relabels the merged front matter as sequential lowercase roman numerals, sets metadata + an open-to-Contents action). Hardcodes the specific page labels to move/delete for this exact pair of books — not a general merger. Run this *before* hyperlinking, since it changes page order and count; every page label is reconstructed from scratch and independently verified against the source labels before the script reports success. This is the one script in the repo that deliberately uses the pypdf writer/append pattern bugs #6 and #7 (below) warn against for the hyperlinking pipeline — reordering/deleting pages here genuinely requires rebuilding the page tree, and it explicitly reconstructs `/PageLabels` and `/Info` metadata afterward rather than assuming pypdf preserves them (per bug #7). |
+| `combine_books.py` | Merges the GURPS Basic Set, 4E Characters and Campaigns PDFs into one file (deletes a few cut-content pages, splices the two front matters/TOCs together, moves both books' `II` pages to the end, relabels the merged front matter as sequential lowercase roman numerals, sets metadata + an open-to-Contents action), then optionally (`--hyperlink`, off by default) hyperlinks the result. Hardcodes the specific page labels to move/delete for this exact pair of books — not a general merger. Every page label is reconstructed from scratch and independently verified against the source labels before the merge step reports success. The merge step uses `pypdf`'s writer/append pattern (see bugs #6/#7 below) rather than `pikepdf` — that's normally avoided in this pipeline, but reordering/deleting pages here genuinely requires rebuilding the page tree, and the script explicitly reconstructs `/PageLabels` and `/Info` metadata afterward rather than assuming pypdf preserves them. The `--hyperlink` step is a **separate, later pass**, opening the just-written file fresh with PyMuPDF (`fitz`) — it does not touch or extend the pypdf writer object. Its reference-matching logic (regexes, cross-book detection, rect-safety checks) is a full inline copy of `hyperlink_pdf_universal.py`'s, kept independent on purpose since this is a one-off pipeline for exactly one merged file; but its page-number resolution is deliberately *not* copied from that script — see bug #19 below for why. |
 
 ## Core architecture
 
@@ -40,7 +40,11 @@ without linking a reference that's actually citing a *different* book.
   taking the *mode* of `(pdf_index - printed_number)` across the whole
   document. This is robust to a handful of noisy/wrong footer reads but will
   need re-thinking for a book with a fundamentally different numbering
-  scheme (e.g. per-chapter restarts).
+  scheme (e.g. per-chapter restarts) — confirmed in practice by bug #19
+  below, where a file spliced together from two independently-paginated
+  books broke this assumption outright; `combine_books.py` works around
+  it locally rather than fixing it here, so this limitation still stands
+  for this function/script.
 - **The Table of Contents is protected implicitly, and self-hyperlinked if
   it appears to lack links entirely.** Protection: before inserting any
   link anywhere in the book, the code checks whether that spot is already
@@ -289,6 +293,45 @@ first.
     title metadata, so if cross-book filtering looks broken on a new book,
     check the startup print line for what trigger word was actually used
     before assuming the detection logic itself is at fault.
+
+19. **`detect_page_labels()`'s single-global-offset assumption
+    (`pdf_index - printed_number` constant for the whole book) breaks
+    completely on a file assembled from two separately-paginated books
+    glued together** — confirmed on `combine_books.py`'s merged
+    Characters+Campaigns output. Splicing pages from a second book into
+    the middle/end of a first one shifts that offset at every
+    insertion/deletion point, so the file actually contains *several*
+    valid offsets, not one. `detect_page_labels()` picks whichever one
+    wins the majority vote (the larger source book) and treats every page
+    number belonging to the other offset as noise, outside the resulting
+    `valid_range` — so **every reference anywhere in the book pointing to
+    a page in the "losing" book gets silently rejected as "out of page-number
+    range."** Measured on the real 575-page combined file: two dominant
+    offsets, 324 pages' worth of footer votes for Characters vs. 234 for
+    Campaigns — meaning all 234 of Campaigns' pages, and every reference
+    to them from anywhere in the book (including from within Characters),
+    were being skipped before this was fixed. Not a rounding-error-sized
+    bug; it's binary per book. **Fix, scoped to `combine_books.py` only**
+    (deliberately *not* applied to `hyperlink_pdf_universal.py` itself —
+    see the "Nothing about page numbering is hardcoded" bullet under
+    "Core architecture" above, which this confirms in practice):
+    `combine_books.py` already builds and verifies `combined_labels`, the
+    true label for every output page, while constructing the merged file.
+    Its own `add_hyperlinks()`
+    uses that directly as a `{printed_number: pdf_index}` dict instead of
+    re-deriving numbering from footer text under an offset assumption —
+    no offset math, no false "out of range" rejections possible. Verified
+    against the real merge: page-reference skips for this reason dropped
+    from what would have been ~234 pages' worth to 5, and those 5 are all
+    independently explainable (4 cite pages 329-334, which the script
+    itself deletes as cut content and which therefore genuinely no longer
+    exist; 1 cites what's now roman-numeral front matter, the same
+    pre-existing limitation noted below). **If this pattern comes up
+    again** (any future need to hyperlink a book assembled from multiple
+    source PDFs with independent pagination), re-derive this same fix
+    rather than reaching for `detect_page_labels()` — or add proper
+    piecewise/multi-offset support to that function itself if a
+    combined-file scenario ever needs to reuse it directly.
 
 ## Testing / verification methodology
 
