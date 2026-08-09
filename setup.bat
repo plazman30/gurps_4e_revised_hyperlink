@@ -1,8 +1,8 @@
 @echo off
 REM Double-click setup for the GURPS PDF Hyperlinker (Windows).
 REM
-REM Installs Python via winget if it's missing, then installs the one
-REM required Python package. Safe to run more than once.
+REM Installs Python via winget if it's missing, then installs the
+REM required Python packages. Safe to run more than once.
 
 setlocal
 cd /d "%~dp0"
@@ -47,7 +47,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Installing the required Python package ^(PyMuPDF^)...
+echo Installing the required Python packages ^(PyMuPDF, pypdf^)...
 python -m pip install -r requirements.txt
 
 echo.

@@ -63,7 +63,7 @@ GitHub, not a sign anything's wrong):
   anyway**.
 
 The script installs Python (and Homebrew, on macOS, if you don't have it)
-and the one required package, then tells you the command to run the tool
+and the required packages, then tells you the command to run the tool
 itself. If it fails partway through, the manual steps below explain what
 it's doing and why, which makes it easier to spot where things went wrong.
 
@@ -123,7 +123,7 @@ onto the Terminal app's icon, or type `cd ` (with a trailing space) into
 Terminal and drag the folder into the window — either way it fills in the
 path for you. Press Enter.
 
-**5. Install the one required package**
+**5. Install the required packages**
 
 ```
 python3 -m pip install -r requirements.txt --break-system-packages
@@ -174,7 +174,7 @@ top, type `cmd`, and press Enter — this opens a Command Prompt already
 pointed at that folder. (On Windows 11 you can also right-click inside the
 folder and choose **Open in Terminal**.)
 
-**5. Install the one required package**
+**5. Install the required packages**
 
 ```
 python -m pip install -r requirements.txt
@@ -251,6 +251,7 @@ skipped, and everything else still gets processed.
 | `crop_to_center.py` | Optional preprocessing: crops uneven left/right margins so text is centered on the page. Not needed for hyperlinking — only useful if you're starting from a raw scan/export with inconsistent margins. Preserves page labels, existing links, and metadata (a plain `pypdf`-based crop won't). |
 | `unlinked_report.py` | Audits an *already-linked* PDF and reports every reference-looking piece of text that still has no link, with a best guess at why (out of range / looks like a different book / genuinely unexplained). Good for double-checking a run before calling it done. |
 | `remove_cross_book_links.py` | Cleanup pass for an existing file: finds and removes any link that was wrongly created for a different-book reference. |
+| `combine_books.py` | Merges the GURPS Basic Set, 4th Edition PDFs (Characters + Campaigns) into one combined book: drops a handful of cut-content pages, splices each book's front matter and table of contents together, moves both copyright/title (`II`) pages to the very end, relabels the merged front matter with sequential lowercase roman numerals, and sets the file's title/author/subject metadata plus an open-to-Contents action — all while keeping every other page's original page label intact. Book-specific (hardcodes which page labels move/delete for this exact pair of books), not a general-purpose PDF merger. Run before hyperlinking, since it changes the page order. |
 | `extract_links.py` / `apply_links.py` | Advanced use only — lets you pull a verified set of links out of one copy of a book and reapply them onto a *different* copy (e.g. a differently cropped or compressed export of the same content), matching by text rather than raw coordinates. Not part of the normal workflow. |
 
 ## Limitations (read before trusting the output blindly)

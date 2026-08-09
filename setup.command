@@ -2,7 +2,7 @@
 # Double-click setup for the GURPS PDF Hyperlinker (macOS).
 #
 # Installs Homebrew if needed, installs Python via Homebrew if needed,
-# then installs the one required Python package. Safe to run more than
+# then installs the required Python packages. Safe to run more than
 # once -- each step just says "already installed" and moves on.
 
 set -e
@@ -37,7 +37,7 @@ echo "Installing Python (skips automatically if already installed)..."
 brew install python3
 echo
 
-echo "Installing the required Python package (PyMuPDF)..."
+echo "Installing the required Python packages (PyMuPDF, pypdf)..."
 python3 -m pip install -r requirements.txt --break-system-packages
 echo
 
