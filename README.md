@@ -7,12 +7,19 @@ clicking through the table of contents, no external app.
 
 Built and tested against GURPS Basic Set, Fourth Edition Revised (and, for
 some features, GURPS High-Tech: Electricity and Electronics and GURPS
-Space). **This tool is GURPS-specific** — the reference grammar it looks
-for (`p.`/`pp.` abbreviations, `Chapter N` wording, GURPS's book-code
-shorthand, a hardcoded list of GURPS product titles) matches GURPS's own
-conventions, and it has not been tested against a PDF from any other RPG
-publisher. It may partially work on a non-GURPS book (or it may silently
-find nothing), but that hasn't been verified — see **Limitations** below.
+Space), plus a separate script tested against Mongoose Publishing's
+Traveller line (see below). **The main script, `hyperlink_pdf_universal.py`,
+is GURPS-specific** — the reference grammar it looks for (`p.`/`pp.`
+abbreviations, `Chapter N` wording, GURPS's book-code shorthand, a
+hardcoded list of GURPS product titles) matches GURPS's own conventions.
+It may partially work on a book from a different publisher (or it may
+silently find nothing), but that's not verified — see **Limitations**
+below. For Mongoose Publishing's Traveller line specifically, use
+`hyperlink_pdf_mongoose.py` instead (see **Other scripts in here**) — it's
+a fork of the same logic adapted to that line's actual conventions
+(spelled-out "page"/"pages" wording, a different TOC/Index heading style,
+and a cross-book citation style that names the other book *after* the
+page number instead of before).
 
 ## What it does
 
@@ -192,6 +199,12 @@ instead of `python3` in the commands (Windows' installer doesn't create a
 
 ## Usage
 
+*(These examples use `hyperlink_pdf_universal.py`, for GURPS books. If
+you're processing a Mongoose Publishing Traveller-line book instead —
+Traveller Core Rulebook, Traveller Companion, High Guard, Aliens of
+Charted Space, etc. — swap in `hyperlink_pdf_mongoose.py`; every command
+below, including `--batch`, works identically either way.)*
+
 ### Single file
 
 ```
@@ -245,6 +258,7 @@ skipped, and everything else still gets processed.
 
 | Script | What it's for |
 |---|---|
+| `hyperlink_pdf_mongoose.py` | The version to use for **Mongoose Publishing's Traveller line** (Traveller Core Rulebook, Traveller Companion, High Guard, Aliens of Charted Space, and similar) instead of `hyperlink_pdf_universal.py`. Same overall approach and command-line usage (single file or `--batch`, same CSV report), but adapted to that line's actual conventions: recognizes spelled-out `page NNN`/`pages NNN-NNN` wording (not just `p.`/`pp.`), understands a "pages 152-3" abbreviated-range style, finds the Table of Contents/Index by heading size and position instead of a repeated footer word, and catches Mongoose's cross-book citation style of naming the other book *after* the page number ("page 149 of the Traveller Core Rulebook") rather than before it. Not a generic "any publisher" script — it's specific to this line, the same way `hyperlink_pdf_universal.py` is specific to GURPS. |
 | `hyperlink_pdf.py` | The original, more limited version — page and Index references only, no chapters, no batch mode. Kept as a known-good fallback if `hyperlink_pdf_universal.py` ever regresses on a book it used to handle. |
 | `hyperlink_pdf_v2_chapters.py` | An intermediate version between the two above. Superseded by `hyperlink_pdf_universal.py` — no reason to reach for this one now. |
 | `setup.command` / `setup.bat` | One-click installer (macOS / Windows) — see **Installation** above. |
@@ -256,13 +270,20 @@ skipped, and everything else still gets processed.
 
 ## Limitations (read before trusting the output blindly)
 
-- **Not tested on any non-GURPS publisher's PDF.** Everything above has
-  only been verified against actual GURPS books. The `p.`/`pp.` and
-  `Chapter N` reference styles, the GURPS book-code shorthand, and the
-  hardcoded GURPS product-title list are all GURPS conventions — a
-  different publisher's book may use different wording entirely (e.g.
-  spelling out "page" or "chapter six" instead), in which case this tool
-  would likely find few or no references to link, without erroring.
+*(These apply to `hyperlink_pdf_universal.py`. If you're using
+`hyperlink_pdf_mongoose.py` for a Traveller-line book instead, most of
+these are already addressed there — see the script's entry in **Other
+scripts in here** above.)*
+
+- **Not tested on any publisher's PDF besides GURPS and (separately, via
+  `hyperlink_pdf_mongoose.py`) Mongoose Publishing's Traveller line.**
+  Everything above has only been verified against actual GURPS books. The
+  `p.`/`pp.` and `Chapter N` reference styles, the GURPS book-code
+  shorthand, and the hardcoded GURPS product-title list are all GURPS
+  conventions — a *third* publisher's book may use different wording
+  entirely (e.g. spelling out "page" or "chapter six" instead), in which
+  case this tool would likely find few or no references to link, without
+  erroring.
 - **It can't perfectly tell "this page number is in my own book" from "this
   page number happens to match, but the sentence is citing a different
   book."** The cross-book filter catches the common phrasing ("GURPS

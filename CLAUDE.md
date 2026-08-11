@@ -12,7 +12,11 @@ reappear if that code gets rewritten from a clean-room description of what it
 ## What this project does
 
 Auto-hyperlinks in-text page and chapter references in a PDF (originally
-built for GURPS sourcebooks, but the detection is mostly generic). Given a
+built for GURPS sourcebooks, and the detection architecture is mostly
+generic, but each publisher's actual reference grammar/conventions needs
+its own verified script — see `hyperlink_pdf_mongoose.py` for Mongoose
+Publishing's Traveller line, forked from the GURPS version once real
+testing found genuine differences, documented in bugs #20-#25). Given a
 PDF with plain text like "see p. 208" or "Chapters 11-13", it finds every
 such reference, works out which physical page it means, and inserts a
 clickable link — without needing any external lookup table, without touching
@@ -23,7 +27,8 @@ without linking a reference that's actually citing a *different* book.
 
 | File | Purpose |
 |---|---|
-| `hyperlink_pdf_universal.py` | **Current active development version — start here.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. **Next planned step (not yet done): testing against non-GURPS PDFs** — see "GURPS-specific vs. generic" below for what's known to be hardcoded. |
+| `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
+| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books (Traveller Core Rulebook, Traveller Companion, High Guard, Aliens of Charted Space) actually diverged from GURPS conventions. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing without these changes. See bugs #20-#24 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
 | `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
 | `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
 | `crop_to_center.py` | Unrelated preprocessing tool: crops mismatched left/right margins so text is centered. Not required for hyperlinking; only relevant if starting from a raw, uncropped scan/export. |
@@ -333,6 +338,98 @@ first.
     piecewise/multi-offset support to that function itself if a
     combined-file scenario ever needs to reuse it directly.
 
+20. **The TOC/Index page-detection heuristic (footer/header word repeated
+    on every page of that section) is a GURPS convention, not a universal
+    one — confirmed broken outright on real Mongoose Traveller books.**
+    `hyperlink_pdf_universal.py`'s `detect_toc_pages()`/`detect_index_pages()`
+    look for a keyword like "contents"/"index" appearing in the *footer/
+    header band of every page* of that section. Mongoose's books never do
+    this — the word appears exactly once, as a one-off page-top heading.
+    A literal port would have silently detected zero TOC/Index pages on
+    every Mongoose book, quietly disabling chapter extraction *and* the
+    TOC self-hyperlinking feature with no error. Fixed in
+    `hyperlink_pdf_mongoose.py`'s `page_has_heading()` with two heuristics
+    derived from real extracted word data instead: (a) an anomalously
+    huge bounding box (>50pt tall) — confirmed on the actual Index-opening
+    page of all 3 test books, apparently MuPDF mis-measuring a decorative
+    section-title treatment (same anomaly class as bug #15, but a
+    reliable *positive* signal here rather than noise to filter out), or
+    (b) a normal word that's simply much larger than body text (≥17pt vs.
+    ~13pt body) and sits in the top 40% of the page. **If porting either
+    detector to another new publisher, don't assume either convention —
+    check real footer/header text across several pages first.**
+
+21. **A British-publishing range-abbreviation convention ("pages 152-3"
+    meaning 152-153, not literally page "3") will silently produce a
+    backwards or nonsensical range if parsed the same way as a normal
+    range.** Confirmed in a real Mongoose book (Traveller Companion).
+    Fixed with `resolve_range_end()`: only expands the second number when
+    it's *both* shorter than the first number's digit count *and*
+    numerically smaller than it (an ordinary non-abbreviated range like
+    "110-125" never goes backward, so it's left untouched) — keeps the
+    first number's leading digits and swaps in the written trailing
+    digits (`152` + `3` → `153`).
+
+22. **Mongoose's own cross-book citation convention puts the other book's
+    title *after* the page reference** ("page 149 of the Traveller Core
+    Rulebook"), the reverse of GURPS's "GURPS `<Title>`, p. NNN" (title
+    *before*). The existing backward-looking `title_nearby()` structurally
+    cannot catch this — it only ever scans words preceding the reference.
+    Fixed by adding a separate forward-looking `title_after()` layer,
+    triggered by "of"/"in" (optionally + "the") right after the
+    reference, requiring **at least 2** consecutive Title-Case words
+    afterward (not just 1) to avoid a false skip on an incidental
+    capitalized word like "of the Introduction" — real citations are
+    confirmed to always be multi-word product names ("Traveller Core
+    Rulebook", "High Guard"). **If a future publisher's convention differs
+    from both of these shapes, add another dedicated layer rather than
+    trying to generalize `title_nearby()`/`title_after()` into one
+    direction-agnostic function** — keeping them separate is what made
+    each one's false-positive guard easy to reason about independently.
+
+23. **A PDF's `/Info Title` metadata can't be trusted to exist or be
+    usable, even less reliably than assumed when that field was first
+    added (bug #18).** Confirmed on real Mongoose PDFs: Core Rulebook and
+    Companion both have a blank title, and High Guard's title is a literal
+    leftover InDesign export filename (`"High Guard Cover.indd"`) — using
+    its first word ("high") as the cross-book trigger would have been
+    actively wrong, not just unhelpful. Fixed in two parts: (a)
+    `detect_title_trigger_word()` now first checks whether the title
+    string itself is shaped like a filename (`re.search(r"\.\w{2,5}$",
+    title)`) and discards it if so, same as an empty title; (b) when no
+    usable title survives, it falls back to scanning the first 6 pages'
+    extracted text for a capitalized word immediately before a `©`/`(c)`
+    copyright mark (e.g. "Traveller ©2026 Mongoose Publishing Ltd." →
+    `"traveller"`) instead of giving up and using the hardcoded `"gurps"`
+    default, which would silently disable cross-book filtering entirely
+    on a non-GURPS book with no title metadata.
+
+24. **A decorative letter-spaced chapter-divider graphic can bleed
+    single-letter "words" into forward-scanning text logic, corrupting a
+    title match.** Found via `title_after()` on a real page (*Aliens of
+    Charted Space*): a section divider rendered as "HIGH GUARD:
+    ASLAN\nC\nH\nA\nP\nT\nE\nR..." extracts as a run of individual
+    single-letter word tokens immediately following a genuine title.
+    Without a guard, the collected title text would trail off into
+    "Aslan C H A P T" instead of stopping at the real title. Fixed by
+    rejecting any token shorter than 2 characters (or not starting with
+    an uppercase letter) as a stop condition in `title_after()`'s
+    word-collection loop, rather than only checking for line breaks or
+    punctuation.
+
+25. **The `p.`/`pp.` abbreviation-only reference grammar really is
+    GURPS-specific, confirmed rather than just suspected** (this was
+    flagged as an open question in "Known open limitations" before real
+    non-GURPS testing happened). Mongoose's Traveller line spells the
+    word out in full ("page 149", "pages 152-3") instead of abbreviating
+    it. `hyperlink_pdf_mongoose.py` adds `page`/`pages` as an equally
+    valid keyword alongside `p.`/`pp.` throughout — both the initial
+    reference-matching pass and the `search_for()` glue-trim refinement
+    probes (bug #14) needed their own "page"/"pages" probe variants,
+    since a probe string built for the abbreviated form (`"p. 10"`)
+    never matches spelled-out source text and would silently fail the
+    refinement step, falling back to the coarser word-token rect instead.
+
 ## Testing / verification methodology
 
 - **Don't trust `page.get_links()[i]['page']` as ground truth** (see bug #3
@@ -418,20 +515,28 @@ PDF in-repo:
 - Chapter extraction assumes the TOC's top-level entries are lines whose
   *first word* is a lone `"N."` token — this matches GURPS's convention but
   isn't a universal PDF/TOC standard.
-- TOC-page detection assumes the word "Contents" appears in the page's
-  footer/header band (same pattern as Index detection). A book that labels
-  it differently, or puts the label somewhere other than the footer band,
-  won't be recognized as having a TOC at all — meaning both chapter
-  extraction *and* the TOC self-hyperlinking feature would silently find
-  nothing to do, without erroring.
-- **Not yet tested against a non-GURPS book, as of this writing.** Known
-  GURPS-specific assumptions that will need real testing (not guessing) to
-  know what actually breaks: the `p.`/`pp.` abbreviation-only reference
-  grammar (a publisher who writes "page" in full won't match at all), the
-  `KNOWN_GURPS_TITLES` allowlist (irrelevant, harmlessly inert, for a
-  different publisher), the book-code shorthand check (same — harmlessly
-  inert elsewhere), and the "N." chapter/TOC conventions above. None of
-  these should *break* on a non-GURPS book — worst case they just find
-  zero matches for that particular feature — but that also means zero
-  cross-book protection for whatever citation style a different publisher
-  actually uses, which is the thing most worth verifying first.
+- TOC-page detection in `hyperlink_pdf_universal.py` assumes the word
+  "Contents" appears in the page's footer/header band, repeated on every
+  page of that section (same pattern as Index detection). This is
+  confirmed GURPS-specific, not universal — see bug #20, where real
+  Mongoose books instead show the heading once, as a large one-off
+  page-top title. `hyperlink_pdf_mongoose.py`'s `page_has_heading()`
+  fixes this for that fork, but the limitation as described here still
+  stands for `hyperlink_pdf_universal.py` itself — it hasn't been
+  generalized back into the GURPS-line script, since every GURPS book
+  tested so far does use the repeated-footer convention and there's been
+  no real case forcing the change there.
+- **Non-GURPS testing has now happened once** — see `hyperlink_pdf_mongoose.py`
+  and bugs #20-#25 — against Mongoose Publishing's Traveller line (Core
+  Rulebook, Companion, High Guard, Aliens of Charted Space). Several of
+  the predictions in this bullet's previous version were confirmed
+  correct (the `p.`/`pp.`-only grammar really did need extending — see
+  bug #25's spelled-out "page"/"pages" support alongside the abbreviated
+  form; the TOC/Index footer-word convention really did break, per bug
+  #20 above) and some were more subtle than
+  predicted (the title-metadata fallback wasn't just "irrelevant/inert,"
+  it was actively wrong for one book — bug #23). **Still genuinely
+  untested: any publisher other than these two.** Don't assume Mongoose's
+  Traveller conventions generalize to a *third* publisher any more than
+  GURPS's did to Mongoose — re-derive from real pages again, the same way
+  both of these were derived.
