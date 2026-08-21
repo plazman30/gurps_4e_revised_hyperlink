@@ -28,7 +28,7 @@ without linking a reference that's actually citing a *different* book.
 | File | Purpose |
 |---|---|
 | `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
-| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#31 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
+| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31, #32). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#32 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
 | `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
 | `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
 | `crop_to_center.py` | Unrelated preprocessing tool: crops mismatched left/right margins so text is centered. Not required for hyperlinking; only relevant if starting from a raw, uncropped scan/export. |
@@ -618,6 +618,53 @@ first.
     found by deliberately auditing every skip reason across every book
     for a specific suspicious pattern (self-citation, Index-page
     coincidence) rather than only checking the counts looked plausible.**
+
+32. **The first confirmed actual WRONG link found in this whole line of
+    testing (bugs #26/#29/#31 were all missed/wrongly-skipped links --
+    a link that should exist but doesn't; this one is a link that exists
+    and points to the wrong place), and the most serious class of bug
+    for that reason.** `title_bare_before()`'s allowlist match required
+    the known title to sit *immediately* before the reference, with only
+    `"("`, `"see"`, `"cf."`, `"in"` skippable in between. Real Mongoose
+    text also uses `"<Title> on page NN"` (`"...the manipulator options
+    present in the Vehicle Handbook on page 59"`), which that skip-word
+    set didn't cover — `"on"` isn't in it, so the check gave up at "on"
+    and never reached "Vehicle Handbook" at all. Confirmed the actual
+    consequence, not just the gap: Robot Handbook's report showed this
+    exact citation as `"added"`, linking to Robot Handbook's *own* page
+    60 — actively wrong, not merely incomplete, since a reader clicking
+    it lands on unrelated content in the wrong book entirely. Found by
+    auditing "out of page-number range" skips across all 21 books (a
+    category not otherwise reviewed this pass) and noticing one, in
+    *World Builder's Handbook*, that read `"...found in the Traveller
+    Core Rulebook on page 260"` — a real cross-book citation that
+    happened to fail silently *for the right final answer, wrong
+    reason* (260 exceeds that book's own page count, so it got rejected
+    by the range check regardless of whether cross-book detection
+    caught it) — which is what prompted searching for how common the
+    `"<Title> on page NN"` shape actually is across the corpus. Fixed by
+    adding `"on"` to `title_bare_before()`'s skip-word set. Safe to skip
+    unconditionally rather than only after a partial title match,
+    because the allowlist check is what actually gates a result, not the
+    skip-word set — confirmed with a direct test: `"installation on
+    vehicles on page 59"` (a real same-book sentence from the very same
+    book) still correctly returns no match, since skipping "on" just
+    lets the grown phrase reach as far back as a real title exists to
+    find, and "vehicles" (lowercase) stops the growth immediately with
+    nothing gained. Verified with a full 21-book regression: Robot
+    Handbook's added count dropped by exactly 3 (51 → 48, all three
+    confirmed genuine "Vehicle Handbook"/"High Guard" citations by
+    reading their actual sentences), World Builder's Handbook's dropped
+    by 2 with the previously-misfiled "out of range" case now correctly
+    bucketed as a title-nearby skip, and every other book's counts were
+    unchanged. A follow-up 258-link `pikepdf` destination sweep plus an
+    oversized-rect sweep across all 21 outputs came back completely
+    clean. **General lesson: an "out of range" skip is not automatically
+    a non-issue just because the final outcome (no link added) matches
+    what a correct cross-book detection would have produced — the wrong
+    mechanism catching it by coincidence is itself a signal that a real
+    detection gap exists nearby, worth chasing even when nothing looks
+    broken on the surface.**
 
 ## Testing / verification methodology
 

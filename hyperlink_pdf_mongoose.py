@@ -597,9 +597,20 @@ def title_bare_before(words, ref_word_idx):
     citation shape). Stops and returns as soon as the accumulated run
     matches, so a longer preceding phrase ("the Colonies table in
     Characters & Equipment") doesn't get pulled in past the title's own
-    start."""
+    start. "on" is also skippable here ("...present in the Vehicle
+    Handbook on page 59") -- confirmed a real wrong link from its
+    absence: Robot Handbook cites a different book this way, and without
+    skipping past "on" the title never got reached at all, so this
+    genuinely cross-book reference was linked into Robot Handbook's own
+    page instead. Safe to skip unconditionally (not just after a title
+    match) because the allowlist check below is what actually gates a
+    match -- skipping "on" just lets the grown phrase reach as far back
+    as a real title, it can't manufacture a match against ordinary
+    prose like 'installation on vehicles on page 59' (grows into
+    lowercase 'vehicles' and stops with no match, same as any other
+    non-title phrase)."""
     i = ref_word_idx - 1
-    while i >= 0 and words[i][4].strip("(),.;:").lower() in ("(", "see", "cf.", "in"):
+    while i >= 0 and words[i][4].strip("(),.;:").lower() in ("(", "see", "cf.", "in", "on"):
         i -= 1
     run = []
     steps = 0
