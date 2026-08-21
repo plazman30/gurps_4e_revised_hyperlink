@@ -59,6 +59,20 @@ def detect_title_trigger_word(doc):
     that as "cross-book filtering disabled" rather than guessing, since a
     wrong trigger word actively suppresses real links."""
     title = (doc.metadata or {}).get("title", "") or ""
+    # Mongoose's 1st-edition "numbered series" books put a generic
+    # structural word + volume number BEFORE the real distinctive title,
+    # separated by a colon -- confirmed real /Info Title metadata:
+    # "Book 9: Robot", "Book 1: Mercenary Second Edition", "Alien Module
+    # 1: Aslan". Extracting the first word without stripping this prefix
+    # picks "book" or leaves "alien" ahead of the real title word --
+    # "book" in particular is a common enough English word that it's a
+    # fragile, silently-wrong trigger even though no false-positive skip
+    # was observed in the three books that produced it (title_nearby()
+    # never happened to fire there; title_after() caught all their real
+    # cross-book citations instead). Strip the prefix before the normal
+    # extraction below runs, same "low-impact but still wrong" standard
+    # bug #27 already fixed the "2300AD" mid-token match to.
+    title = re.sub(r"^\s*(?:[A-Za-z]+\s+){1,3}?\d+\s*:\s*", "", title)
     # An InDesign export can leave the source filename in /Title instead
     # of the real product name (confirmed: High Guard's is literally
     # 'High Guard Cover.indd') -- treat anything shaped like a filename
@@ -78,7 +92,19 @@ def detect_title_trigger_word(doc):
     # capitalized word from deep in the body.
     for i in range(min(6, doc.page_count)):
         text = doc[i].get_text()
-        m = re.search(r"([A-Z][A-Za-z']+)\s*(?:©|\(c\))", text)
+        # \b anchors the start of the captured token, and the class
+        # allows a leading digit -- without both, this can match INTO
+        # the middle of a glued alphanumeric brand like "2300AD ©2021",
+        # capturing the meaningless suffix "AD" instead of the real
+        # word. Confirmed on all three 2300AD boxed-set books: their
+        # copyright line reads "2300AD ©2021 Mongoose...", and the
+        # original letters-only, unanchored pattern silently returned
+        # "ad" for all three (a real, if low-impact, cross-book-trigger
+        # bug -- "ad" is never going to appear before a real citation,
+        # but neither would the correct answer here, "2300ad", not
+        # "traveller": these books' own self-brand is the setting line,
+        # not the rules-engine line).
+        m = re.search(r"\b([A-Za-z0-9][A-Za-z0-9']*)\s*(?:©|\(c\))", text)
         if m:
             return m.group(1).lower()
     return None
@@ -204,16 +230,32 @@ def page_has_heading(page, keyword):
           contain the word ('...dump its contents on one...', ~13pt)
           and a same-sized TOC list entry further down the same page
           ('Index . . . 184', which sits well past the top-40% cutoff).
+      (c) the SAME keyword rendered TWICE at byte-identical bounding-box
+          coordinates on the page -- a faux-bold/shadow rendering trick
+          some books use for a heading instead of a genuinely bigger
+          font. Confirmed on Aliens of Charted Space vol. 2: its
+          'CONTENTS' heading is only 14.7pt tall (fails check (b)'s
+          17pt cutoff outright -- a font-size threshold tuned on one
+          set of books doesn't necessarily hold for another from the
+          same publisher), but is printed twice at the exact same (x0,
+          y0, x1, y1). Ordinary body text is never printed twice at the
+          identical pixel position, so this is safe to treat as a
+          standalone positive signal without picking a size cutoff at
+          all -- it doesn't replace (a)/(b), it catches what they miss.
     """
     h = page.rect.height
-    for w in page.get_text("words"):
-        if w[4].strip(".,:").lower() != keyword:
-            continue
+    matches = [w for w in page.get_text("words") if w[4].strip(".,:").lower() == keyword]
+    for w in matches:
         height = w[3] - w[1]
         if height > 50:
             return True
         if height >= 17 and w[1] < h * 0.4:
             return True
+    for i, a in enumerate(matches):
+        for b in matches[i + 1:]:
+            if (abs(a[0] - b[0]) < 0.5 and abs(a[1] - b[1]) < 0.5
+                    and abs(a[2] - b[2]) < 0.5 and abs(a[3] - b[3]) < 0.5):
+                return True
     return False
 
 
@@ -441,9 +483,15 @@ def looks_like_title_span(words):
     return True
 
 
-def title_nearby(words, ref_word_idx):
+def title_nearby(words, ref_word_idx, vocab=frozenset()):
     """If a '<TRIGGER> <Title...>' run sits immediately before this
-    reference, return the matched text (signal to skip linking)."""
+    reference, return the matched text (signal to skip linking) --
+    UNLESS the matched phrase is actually this book's own chapter/section
+    name (checked against `vocab`, the same TOC+Index vocabulary
+    italic_title_nearby() already uses), in which case it's a same-book
+    reference, not a cross-book one. See title_after()'s docstring for
+    why this check exists: a book can legitimately have its own trigger
+    word start several of its own internal chapter titles."""
     lo = max(0, ref_word_idx - LOOKBACK_WORDS_FOR_TITLE)
     span = words[lo:ref_word_idx]
     for start in range(len(span)):
@@ -451,11 +499,14 @@ def title_nearby(words, ref_word_idx):
         if bare_tok == TITLE_TRIGGER_WORD:
             between = span[start + 1:]
             if looks_like_title_span([w[4] for w in between]):
-                return " ".join(w[4] for w in span[start:])
+                phrase = " ".join(w[4] for w in span[start:])
+                if normalize_title(phrase) in vocab:
+                    continue
+                return phrase
     return None
 
 
-def title_after(words, ref_end_idx):
+def title_after(words, ref_end_idx, vocab=frozenset()):
     """If 'of the <Title...>' (or 'of <Title...>'/'in the <Title...>')
     immediately FOLLOWS this reference, return the matched text.
     Mongoose's Traveller line cites other books with the title AFTER the
@@ -467,7 +518,19 @@ def title_after(words, ref_end_idx):
     connector, not just 1, to avoid a stray capitalized word (e.g. 'of
     the Introduction') triggering a false skip -- confirmed real
     citations are always multi-word product names ('Traveller Core
-    Rulebook', 'Traveller Companion', 'High Guard')."""
+    Rulebook', 'Traveller Companion', 'High Guard').
+
+    `vocab` (this book's own TOC+Index terms, same as
+    build_same_book_vocabulary() feeds italic_title_nearby()) guards
+    against a DIFFERENT false-positive shape: a book citing its own
+    chapter this same way. Confirmed on a real book (Alien Module 2:
+    Vargr, whose own chapters are literally titled 'Vargr Character
+    Generation' and 'Vargr Race' per its own Contents page): body text
+    like 'page 32 of the Vargr Race chapter' is a SAME-book reference to
+    its own chapter, not a citation of some other product -- the shape
+    alone ('of the' + 2+ Title-Case words) can't tell the two apart, so
+    without this check every one of these was being wrongly skipped as
+    cross-book, silently losing real same-book links."""
     i = ref_end_idx + 1
     if i >= len(words):
         return None
@@ -496,10 +559,90 @@ def title_after(words, ref_end_idx):
         steps += 1
     if len(title_words) < 2:
         return None
+    if normalize_title(" ".join(title_words)) in vocab:
+        return None
     return " ".join(lead + title_words)
 
 
-# --- Second cross-book signal: an italicized product title cited WITHOUT
+# --- Third cross-book signal: a bare "<Title> page NN" citation with NO
+# connector word and NO trigger word at all before the title -- neither
+# title_nearby() (needs a trigger word like "traveller") nor title_after()
+# (needs "of"/"in" right after the page number) can catch this shape.
+# Confirmed in real 2300AD text: "(see Characters & Equipment page 38)"
+# names the other book with nothing but the bare title sitting directly
+# before the reference. Since there's no structural marker to key off at
+# all here, this only checks against a small known-title allowlist --
+# exactly the same tradeoff KNOWN_GURPS_TITLES already makes below, for
+# the same reason (an unrecognized title just falls through as same-book,
+# the safe failure direction, rather than risking false positives from
+# matching any Title-Case span).
+KNOWN_TRAVELLER_TITLES = {
+    "traveller core rulebook", "traveller core book",
+    "characters & equipment", "characters and equipment",
+    "the worlds of 2300ad",
+    "robot handbook", "central supply catalogue",
+    "vehicle handbook", "aerospace engineer's handbook",
+    "ships of the frontier", "tools for frontier living",
+    "traveller companion", "high guard", "aliens of charted space",
+}
+KNOWN_TRAVELLER_TITLES_NORM = {normalize_title(t) for t in KNOWN_TRAVELLER_TITLES}
+
+
+def title_bare_before(words, ref_word_idx):
+    """Look immediately before the reference for a contiguous run of
+    Title-Case words that, once assembled, matches a KNOWN Traveller/
+    2300AD product title -- same lookback-and-grow approach as
+    italic_title_nearby() below, but keyed on the known-title allowlist
+    instead of italic styling (there's no reliable style cue for this
+    citation shape). Stops and returns as soon as the accumulated run
+    matches, so a longer preceding phrase ("the Colonies table in
+    Characters & Equipment") doesn't get pulled in past the title's own
+    start."""
+    i = ref_word_idx - 1
+    while i >= 0 and words[i][4].strip("(),.;:").lower() in ("(", "see", "cf.", "in"):
+        i -= 1
+    run = []
+    steps = 0
+    while i >= 0 and steps < LOOKBACK_WORDS_FOR_TITLE:
+        bare = words[i][4].strip("(),.;:")
+        # A mid-title connector ("&", "of", "the"...) isn't itself
+        # Title-Case, but a real product name can contain one
+        # ("Characters & Equipment") -- allow it through the same way
+        # looks_like_title_span() does, rather than letting it wrongly
+        # end the run before reaching the title's actual first word.
+        if not bare:
+            break
+        if not (bare[0].isupper() or bare[0].isdigit()) and bare.lower() not in TITLE_CONNECTORS:
+            break
+        run.append(words[i][4])
+        phrase = " ".join(reversed(run)).strip(" ,.;:()")
+        if normalize_title(phrase) in KNOWN_TRAVELLER_TITLES_NORM:
+            return phrase
+        i -= 1
+        steps += 1
+    return None
+
+
+# BookN shorthand: this boxed set's own way of citing a SIBLING PDF in the
+# same product (e.g. "in Book2 page 23" inside Book 1, meaning Book 2's
+# own page 23 -- which doesn't exist in this file at all). Always treated
+# as cross-book regardless of which number, same rationale as GURPS's
+# BOOK_CODE_TOKEN: a missed same-book link is a far smaller problem than
+# wrongly linking into a page number that belongs to a different PDF.
+BOOK_N_TOKEN = re.compile(r'^Book\d{1,2}$', re.IGNORECASE)
+
+
+def book_n_nearby(words, ref_word_idx):
+    i = ref_word_idx - 1
+    if i < 0:
+        return None
+    tok = words[i][4].strip("(),;:")
+    if BOOK_N_TOKEN.match(tok):
+        return tok
+    return None
+
+
+# --- Another cross-book signal: an italicized product title cited WITHOUT
 # the literal trigger word, e.g. "High-Tech, pp. 13-15" (a supplement
 # citing its own parent book by name alone, since the trigger word would
 # be redundant within a book that's already part of that line). GURPS
@@ -847,10 +990,27 @@ def hyperlink_pdf(in_path, out_path):
 
         body_refs, consumed = find_body_references(words)
         all_refs = list(body_refs)
+        n_body_refs = len(all_refs)
         if i in index_pages:
             all_refs += find_index_references(words, page.rect.height, consumed)
 
-        for wi, wj, num, book_code, range_end in all_refs:
+        for ref_idx, (wi, wj, num, book_code, range_end) in enumerate(all_refs):
+            # An Index entry is just "Term \n Number" -- there's no real
+            # sentence around it, so the prose-shaped cross-book checks
+            # below (trigger word/connector/bare-title lookback, italic
+            # run) aren't testing genuine citation grammar here, only
+            # whichever words happen to sit nearby in the alphabetized
+            # list. Confirmed a real false positive from this: in the 1e
+            # Core Rulebook's Index, the entry "Travel Codes 180" sits
+            # immediately after the unrelated entry "Traveller 2" --
+            # this book's own auto-detected trigger word -- so
+            # title_nearby() matched "Traveller ... Travel Codes" as if
+            # it were a real "<trigger> <title>" citation and wrongly
+            # skipped a genuine same-book Index link. `book_code` is
+            # unaffected (it only inspects the reference's own number
+            # token, not surrounding words) and still applies to index
+            # entries too.
+            is_index_ref = ref_idx >= n_body_refs
             rect = fitz.Rect(words[wi][0], words[wi][1], words[wj][2], words[wj][3])
             text = " ".join(w[4] for w in words[wi:wj + 1])
 
@@ -864,18 +1024,28 @@ def hyperlink_pdf(in_path, out_path):
                                      f"GURPS cross-book code {book_code!r} (e.g. p. {book_code}{num})"))
                 continue
 
-            title = title_nearby(words, wi) or title_after(words, wj)
-            if title:
-                skipped_title += 1
-                report_rows.append((i + 1, text, num, "skipped", f"other-book title nearby: {title}"))
-                continue
+            if not is_index_ref:
+                book_n = book_n_nearby(words, wi)
+                if book_n:
+                    skipped_title += 1
+                    report_rows.append((i + 1, text, num, "skipped",
+                                         f"Traveller book-shorthand {book_n!r} nearby (different sibling PDF)"))
+                    continue
 
-            italic_title = italic_title_nearby(words, italic_spans, wi, same_book_vocab)
-            if italic_title:
-                skipped_title += 1
-                report_rows.append((i + 1, text, num, "skipped",
-                                     f"italicized other-book title nearby (no vocab match): {italic_title}"))
-                continue
+                title = (title_nearby(words, wi, same_book_vocab)
+                         or title_after(words, wj, same_book_vocab)
+                         or title_bare_before(words, wi))
+                if title:
+                    skipped_title += 1
+                    report_rows.append((i + 1, text, num, "skipped", f"other-book title nearby: {title}"))
+                    continue
+
+                italic_title = italic_title_nearby(words, italic_spans, wi, same_book_vocab)
+                if italic_title:
+                    skipped_title += 1
+                    report_rows.append((i + 1, text, num, "skipped",
+                                         f"italicized other-book title nearby (no vocab match): {italic_title}"))
+                    continue
 
             target = printed_to_index(num)
             if target is None:
@@ -956,7 +1126,7 @@ def hyperlink_pdf(in_path, out_path):
             chap_word_clean = re.sub(r"^\W+", "", words[wi][4])
             base = "Chapters" if chap_word_clean.lower().startswith("chapters") else "Chapter"
 
-            title = title_nearby(words, wi)
+            title = title_nearby(words, wi, same_book_vocab)
             italic_title = None if title else italic_title_nearby(words, italic_spans, wi, same_book_vocab)
             if title or italic_title:
                 chapter_skipped_title += 1

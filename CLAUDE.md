@@ -28,7 +28,7 @@ without linking a reference that's actually citing a *different* book.
 | File | Purpose |
 |---|---|
 | `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
-| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books (Traveller Core Rulebook, Traveller Companion, High Guard, Aliens of Charted Space) actually diverged from GURPS conventions. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing without these changes. See bugs #20-#24 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
+| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#31 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
 | `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
 | `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
 | `crop_to_center.py` | Unrelated preprocessing tool: crops mismatched left/right margins so text is centered. Not required for hyperlinking; only relevant if starting from a raw, uncropped scan/export. |
@@ -429,6 +429,195 @@ first.
     since a probe string built for the abbreviated form (`"p. 10"`)
     never matches spelled-out source text and would silently fail the
     refinement step, falling back to the coarser word-token rect instead.
+
+26. **Bugs #22's two directional layers (`title_nearby()` backward,
+    `title_after()` forward) still don't cover every citation shape in
+    the wild — confirmed against a different Mongoose product, the
+    2300AD boxed set (Book 1: Characters & Equipment, Book 2: The
+    Worlds of 2300AD, Book 3: Vehicles & Spacecraft), not the books
+    bug #20-#25 were built against.** Real examples found: `"(see
+    Characters & Equipment page 38)"` and `"in Book2 page 23"` — a bare
+    `<Title> page NN` citation with **no trigger word and no connector
+    at all** before the title. `title_nearby()` requires a trigger word
+    immediately before the title span; `title_after()` requires
+    `"of"/"in"` immediately *after* the page number. Neither fires here.
+    Fixed with two more dedicated layers, per bug #22's own advice to
+    add another layer rather than generalizing the existing ones:
+    - `title_bare_before()`: same lookback-and-grow shape as
+      `italic_title_nearby()`, but keyed on a known-title allowlist
+      (`KNOWN_TRAVELLER_TITLES`) instead of italic styling, since there's
+      no reliable style cue for this citation shape at all. Initially
+      missed "Characters & Equipment" entirely — the `&` isn't
+      Title-Case, so the backward-growing word loop stopped dead on it
+      before ever reaching "Characters". Fixed by letting a
+      `TITLE_CONNECTORS` word (already used by `looks_like_title_span()`)
+      pass through the loop without ending it, the same accommodation
+      that function already makes for a forward-scanned title span.
+    - `book_n_nearby()`: this boxed set's own internal shorthand for
+      citing a *sibling* PDF in the same product (`"Book2"` immediately
+      before `"page NN"`, meaning Book 2's own page 23 — which doesn't
+      exist in this file at all). Always cross-book regardless of which
+      number, mirroring `BOOK_CODE_TOKEN`'s existing "any code counts"
+      design (bug list under "Core architecture").
+    **General lesson, now confirmed twice (bugs #20/#22 vs. this one):
+    testing against one or two real books in a product line is not the
+    same as testing against the whole line — a different book (or in
+    this case, a different sub-product from the same publisher) can use
+    a citation grammar the earlier testing never exercised.** Don't
+    treat "verified against real Mongoose books" as "verified against
+    every Mongoose book" — ask which specific books were tested before
+    assuming a convention is covered.
+
+27. **The title-metadata-fallback regex from bug #23 can match INTO the
+    middle of a glued alphanumeric brand name, not just skip it.**
+    `detect_title_trigger_word()`'s fallback scans for a capitalized word
+    immediately before a `©`/`(c)` mark. Confirmed on all three 2300AD
+    boxed-set books, whose copyright line reads `"2300AD ©2021 Mongoose
+    Publishing"`: the original pattern (`r"([A-Z][A-Za-z']+)\s*(?:©|\(c\))"`)
+    has no anchor forcing the captured span to start at a real word
+    boundary, so it happily matched starting mid-token, inside "2300AD",
+    capturing just `"AD"` — a meaningless two-letter trigger word, not an
+    error, so nothing about the run looked wrong (same failure class as
+    bug #8: silent, plausible-looking, wrong). Fixed by (a) adding a
+    `\b` anchor so the match can't start inside a word, and (b) allowing
+    a leading digit in the captured class, since the *correct* answer
+    here is genuinely alphanumeric ("2300ad", this product line's own
+    self-brand — not "traveller", which is the separate underlying
+    rules-engine brand and doesn't appear where these books cite each
+    other). Confirmed the fix has real effect, not just a more sensible
+    printed trigger word: re-running against the actual PDFs with the
+    fix applied, `title_nearby()` correctly catches several genuine
+    "2300AD, page NN" cross-references in Book 1's CSV report (visible
+    as `skipped -- other-book title nearby: 2300AD`) that a trigger word
+    of literal `"ad"` could never have matched. (The *aggregate*
+    skip-title count for that book happened to come out identical
+    before and after this fix — the pre-fix report wasn't kept to
+    determine which specific citations were being caught instead, so
+    that coincidence is unexplained; it doesn't change that the
+    post-fix behavior is independently confirmed correct.)
+
+28. **Mongoose's 1st-edition "numbered series" line (Book 1: Mercenary,
+    Book 9: Robot, Book 10: Cosmopolite, Alien Module 1: Aslan, ...) puts
+    a generic structural word + volume number BEFORE the real title in
+    `/Info Title`, and the trigger-word extraction had no idea to skip
+    it.** Confirmed real metadata: `"Book 9: Robot"`,
+    `"Book 1: Mercenary Second Edition"`, `"Alien Module 1: Aslan"`.
+    Taking the first non-stopword picked `"book"` for three different
+    books — a common English word, and specifically NOT this line's own
+    convention (compare bug #27: there, the *correct* answer was the
+    product's own alphanumeric self-brand; here it's the word after the
+    colon). No false-positive skip was actually observed from this in
+    the three affected books — `title_nearby()` (the only mechanism that
+    uses the trigger word) never happened to fire in them — but it's the
+    same "silently wrong, technically harmless so far" class of bug as
+    #27, not something to leave sitting around waiting for the book that
+    does trip it. Fixed by stripping a leading `"<Word(s)> N: "` prefix
+    (`re.sub(r"^\s*(?:[A-Za-z]+\s+){1,3}?\d+\s*:\s*", "", title)`) before
+    the normal extraction runs. Verified against real titles: correctly
+    strips `"Book 9: "` → `"Robot"`, `"Alien Module 1: "` → `"Aslan"`,
+    while leaving titles with no such prefix (`"Alpha Crucis Sector"`,
+    `"LBB9: Library Data"` — the latter's leading token is one
+    alphanumeric word, not `word + number`, so it doesn't match) alone.
+
+29. **`title_after()` and `title_nearby()` had no way to tell "this
+    Title-Case phrase names a different book" from "this Title-Case
+    phrase is this book's OWN chapter, and the trigger word/connector
+    just happens to precede it" — confirmed as a real, not theoretical,
+    false-positive source.** Found on *Alien Module 2: Vargr*, whose own
+    Contents page lists chapters literally titled "Vargr Character
+    Generation" and "Vargr Race": body text like `"page 32 of the Vargr
+    Race chapter"` is a SAME-book reference to its own chapter, but
+    `title_after()`'s shape-only check (`"of the"` + 2+ Title-Case words)
+    can't distinguish that from a real citation of a different product,
+    so every one of these was being wrongly skipped as cross-book —
+    6 lost same-book links in this one file alone, plus a 7th of the
+    same shape in the 1e Core Rulebook. This is exactly the problem
+    `italic_title_nearby()` already solves for its own citation shape,
+    via the `same_book_vocab` (this book's own TOC+Index terms) built in
+    `build_same_book_vocabulary()` — `title_after()`/`title_nearby()`
+    just never received it. Fixed by threading `same_book_vocab` through
+    both as a `vocab` parameter and checking
+    `normalize_title(matched_phrase) in vocab` before treating a match as
+    cross-book. Verified with a real before/after re-run: Vargr's added
+    count rose 176 → 182 (exactly the 6 recovered links, confirmed by
+    diffing the skip reasons, not just the aggregate number), the 1e Core
+    Rulebook rose 837 → 838, and all 17 other already-verified books
+    (2300AD, 2e, and the rest of 1e) produced byte-identical counts —
+    confirming the fix is precisely targeted, not a broader behavior
+    change in disguise. **General lesson, extending bug #26's: a
+    same-book-vocabulary guard needs to be threaded through *every*
+    shape-based cross-book detector, not just the one it was originally
+    built for — each new detector added for a new citation shape
+    inherits this same blind spot by default and needs the same guard
+    explicitly re-applied, it doesn't come for free.**
+
+30. **`page_has_heading()`'s two font-size-based signals (bug #20) don't
+    generalize to every Mongoose book — confirmed on a book from a
+    different sub-line, *Aliens of Charted Space* vol. 2.** Its
+    "CONTENTS" heading is only 14.7pt tall, under signal (b)'s 17pt
+    cutoff (tuned on the Core Rulebook/High Guard/Companion set, whose
+    headings run ~19-21pt) and nowhere near signal (a)'s >50pt anomaly
+    threshold either. Result: `toc_pages` came up empty, and because
+    `same_book_vocab` is built *from* TOC+Index pages, that came up
+    empty too (`"Built same-book vocabulary: 0 terms"`) — silently
+    disabling bug #29's just-added self-citation guard for this entire
+    book, not just the TOC self-linking feature. No wrong link was
+    actually observed from this in this book's specific 6 skips (all
+    genuinely cited other products), but that's luck, not protection —
+    a future citation phrased as "of the `<this book's own chapter>`"
+    would have been wrongly skipped with zero vocabulary to catch it.
+    Fixed by adding a **third**, independent signal (c) to
+    `page_has_heading()`: the same keyword rendered *twice* at
+    byte-identical bounding-box coordinates on the page — a faux-bold
+    rendering trick this book uses for its heading instead of a
+    genuinely larger font (confirmed: both "CONTENTS" words share the
+    exact same `(x0, y0, x1, y1)`). This needed no size cutoff at all,
+    because ordinary body text is never rendered twice at the identical
+    pixel position — ruling out the false-positive risk a *lower* size
+    threshold would have carried into other books' legitimately-smaller
+    subheadings. Confirmed this doubling pattern is real but NOT
+    universal (a known-working book, the 2022 Core Rulebook update, has
+    no duplication at all — its heading passes via signal (b) normally)
+    — so signal (c) is additive, not a replacement, consistent with how
+    (a) and (b) already coexist. Verified with a full 21-book regression
+    run after the fix: the 2 Aliens volumes now correctly detect their
+    TOC/vocabulary, and all 19 other already-verified books (2300AD, 2e,
+    1e) produced **byte-identical** added/skipped counts to before —
+    confirming signal (c) adds exactly the one detection it was meant to
+    and nothing else.
+
+31. **The prose-shaped cross-book checks (`book_n_nearby()`, `title_nearby()`,
+    `title_after()`, `title_bare_before()`, `italic_title_nearby()`) were
+    being applied to Index-page bare-number entries too, even though an
+    Index entry (`"Term \n Number"`) has no real sentence around it for
+    those checks to test.** Confirmed a real false positive from this,
+    not just a theoretical risk: in the 1e Core Rulebook's own Index,
+    the entry `"Travel Codes 180"` sits immediately after the unrelated
+    alphabetically-prior entry `"Traveller 2"` — which happens to be
+    this exact book's own auto-detected trigger word (bug #23/#27).
+    `title_nearby()` matched `"Traveller ... Travel Codes"` as if it
+    were a genuine `"<trigger> <title>"` citation, purely from
+    coincidental index-list adjacency, and wrongly skipped a real
+    same-book Index link. Searched all 21 already-verified books'
+    reports for the same pattern (any `"other-book title nearby"` skip
+    whose page is a detected Index page) and found exactly this one
+    instance — narrow, but not zero, and the underlying category error
+    (testing prose grammar against an alphabetized term list) applies
+    equally to any future book's Index. Fixed by tracking which entries
+    in `all_refs` came from `find_index_references()` vs.
+    `find_body_references()` and skipping all five prose-shaped checks
+    for the index-origin ones — `book_code` (GURPS-style shorthand) is
+    unaffected, since it only inspects the reference's own number token,
+    not surrounding words, so it's not vulnerable to the same adjacency
+    coincidence. Verified with a full 21-book regression run: the 1e
+    Core Rulebook gained exactly the 1 recovered link (838 → 839, skips
+    1 → 0) and all 20 other books produced byte-identical counts: a
+    second follow-up full-report scan afterward confirmed zero remaining
+    "skip on an Index page" instances anywhere. **This is the same
+    "narrow but real, not zero" finding pattern as bugs #26/#29/#30 —
+    found by deliberately auditing every skip reason across every book
+    for a specific suspicious pattern (self-citation, Index-page
+    coincidence) rather than only checking the counts looked plausible.**
 
 ## Testing / verification methodology
 
