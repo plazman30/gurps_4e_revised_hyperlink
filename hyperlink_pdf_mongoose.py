@@ -552,7 +552,19 @@ def title_after(words, ref_end_idx, vocab=frozenset()):
         # Space, where a chapter-divider graphic sits right after a
         # genuine title). Stopping here keeps the reported match to the
         # real title instead of trailing off into 'ASLAN C H A P T'.
-        if not bare or len(bare) < 2 or not bare[0].isupper():
+        #
+        # A leading digit must also be allowed (matching
+        # looks_like_title_span() and title_bare_before(), which both
+        # already do this) -- 2300AD's own book titles literally start
+        # with '2300AD', not a capital letter. Confirmed a real miss from
+        # this gap: 'found on page 188 of the 2300AD Core Rulebook' in
+        # Tools for Frontier Living wasn't recognized as a title span at
+        # all (steps=0, returns None) because '2300AD'[0] is a digit, not
+        # upper(). It only avoided becoming a wrong same-book link by
+        # coincidence -- 188 also happened to exceed this citing book's
+        # own valid page range -- so a citing book whose range DID reach
+        # that far would have gotten a genuine wrong link.
+        if not bare or len(bare) < 2 or not (bare[0].isupper() or bare[0].isdigit()):
             break
         title_words.append(words[i][4])
         i += 1
@@ -743,8 +755,19 @@ KNOWN_GURPS_TITLES = {
     "martial arts", "horror", "space", "social engineering",
     "zombies", "monster hunters", "action", "banestorm",
     "infinite worlds", "thaumatology", "mysteries", "supers",
-    "traveller", "template toolkit", "power-ups", "pyramid",
+    "template toolkit", "power-ups", "pyramid",
     "gun fu", "vehicles", "steampunk",
+    # NOTE: deliberately does NOT include "traveller", unlike the parent
+    # GURPS script this allowlist was copied wholesale from. There it
+    # means the unrelated 1990s "GURPS Traveller" crossover product; here,
+    # in the Mongoose Traveller fork, every single book in this line IS
+    # Traveller -- so an italicized "Traveller" right before a page ref
+    # would be a same-book self-reference, and this allowlist entry would
+    # wrongly flag it as citing a different product. Never observed to
+    # fire yet (confirmed: 0 hits across the full 21-book test corpus,
+    # despite italics being common -- 161 spans in one book alone), but
+    # that's luck of which books happened to be tested, not protection;
+    # same "silently wrong, technically harmless so far" class as bug #28.
 }
 
 
@@ -1106,6 +1129,31 @@ def hyperlink_pdf(in_path, out_path):
                 skipped_range += 1
                 report_rows.append((i + 1, text, num, "skipped",
                                      "rejected: implausibly large link rect (likely a source PDF text-extraction anomaly)"))
+                continue
+
+            # Re-check for "already linked" AFTER refinement, not just
+            # before it. The pre-refinement check above compares each
+            # reference's own ORIGINAL word rect, but the search_for()
+            # refinement above can independently snap two DIFFERENT
+            # original references onto the SAME final rect -- confirmed
+            # on a real page (1e Core Rulebook p.141): the source PDF
+            # renders an entire line twice at (nearly) identical
+            # coordinates (same bold/shadow-effect duplication as the
+            # faux-bold heading fix above, just applied to body text
+            # instead of a heading), so two separate word-level matches
+            # for "pages 165-166" exist a fraction of a point apart.
+            # Both are within the 2pt y0 tolerance of BOTH duplicate
+            # occurrences search_for() finds, so `near[0]` -- an
+            # arbitrary first pick, not tied to which original word
+            # triggered the search -- resolved to the identical rect
+            # both times, producing two literal duplicate link
+            # annotations stacked on each other. This check closes that
+            # gap regardless of the precise duplication mechanism, by
+            # verifying the rect actually being inserted doesn't already
+            # overlap something in existing_links, not just the rect the
+            # match started from.
+            if any(rects_meaningfully_overlap(rect, r) for r in existing_links):
+                skipped_existing += 1
                 continue
 
             page.insert_link({
