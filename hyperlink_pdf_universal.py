@@ -37,7 +37,7 @@ import csv
 import shutil
 import argparse
 from pathlib import Path
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 from collections import Counter
 
 

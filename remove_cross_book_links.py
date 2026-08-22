@@ -19,7 +19,7 @@ run it after any pipeline step that adds body/index links.
 """
 
 import sys
-import fitz
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 
 LOOKBACK_WORDS = 10     # max words to scan backward for "GURPS" (some titles are long, e.g. "GURPS Low-Tech Companion 2: Weapons and Warriors")
 TOC_IDXS = set(range(4, 10))  # never touch the TOC

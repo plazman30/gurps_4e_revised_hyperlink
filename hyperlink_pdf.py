@@ -51,7 +51,7 @@ LIMITATIONS (please read before trusting the output blindly):
 import sys
 import re
 import csv
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 from collections import Counter
 
 

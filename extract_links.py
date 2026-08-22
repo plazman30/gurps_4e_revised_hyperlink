@@ -25,7 +25,7 @@ and you only want to carry over links you added elsewhere.
 
 import sys
 import json
-import fitz
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 
 
 def parse_skip_range(spec):

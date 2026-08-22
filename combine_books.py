@@ -36,7 +36,7 @@ import argparse
 import csv
 import re
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 import pypdf
 
 OUTPUT_PDF = "GURPS-4E-BasicSet-Combined_rgb.pdf"

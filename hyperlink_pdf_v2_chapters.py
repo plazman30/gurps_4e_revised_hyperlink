@@ -34,7 +34,7 @@ REQUIREMENTS:
 import sys
 import re
 import csv
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 from collections import Counter
 
 

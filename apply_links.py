@@ -25,7 +25,7 @@ wasn't already filtered by extract_links.py's own --skip-pages option.
 import sys
 import json
 import shutil
-import fitz
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 
 
 def texts_roughly_match(a, b):

@@ -12,7 +12,7 @@ For each one, classifies why it's likely unlinked:
 """
 
 import re
-import fitz
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 import xlsxwriter
 
 SRC = "/mnt/user-data/outputs/GURPS_final_index_linked.pdf"
