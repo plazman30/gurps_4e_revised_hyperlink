@@ -28,7 +28,7 @@ without linking a reference that's actually citing a *different* book.
 | File | Purpose |
 |---|---|
 | `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
-| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31, #32, #33, #34, #35). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#35 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
+| `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31, #32, #33, #34, #35, #36, #37). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#37 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_books.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
 | `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
 | `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
 | `crop_to_center.py` | Unrelated preprocessing tool: crops mismatched left/right margins so text is centered. Not required for hyperlinking; only relevant if starting from a raw, uncropped scan/export. |
@@ -801,6 +801,116 @@ first.
     empty and there is no page to resolve chapter 21 to, the same
     "genuinely nothing to link" conclusion already reached for two 1e
     books with zero page citations at all.
+
+36. **A targeted security audit (not a real-book test round like every
+    other entry here, but the same "verify, don't assume" standard)
+    found two real gaps in how the pipeline treats an untrusted input
+    file, plus confirmed the rest of the script has a small attack
+    surface.** No `eval`/`exec`/`os.system`/`subprocess`/`pickle`/
+    network calls anywhere, no hardcoded secrets, and every regex uses
+    bounded quantifiers (`{1,4}` max, capped outer groups) -- no ReDoS
+    risk. Two concrete gaps fixed:
+    - **CSV/formula injection in the `_link_report.csv` output.** The
+      "Matched Text" and "Detail" columns are built directly from
+      PDF-extracted text -- untrusted if the source PDF itself is (e.g.
+      a PDF someone else handed you, not one of your own known-good
+      books). A cell beginning with `=`, `+`, `-`, `@`, tab, or carriage
+      return is interpreted as a formula by Excel/Sheets when the report
+      is opened there (OWASP's well-known "CSV Injection" class) --
+      unescaped, this could let a maliciously-authored PDF's own body
+      text execute as a spreadsheet formula once someone opens the
+      generated report. Fixed with `csv_safe()`, applied to every field
+      before writing: prefixes a literal quote onto any string starting
+      with one of those characters, which Excel/Sheets/Python's own
+      `csv` reader all treat as forcing plain-text interpretation
+      without changing what a human reader sees. Verified harmless on
+      real data: unit-tested against real formula-trigger strings (all
+      correctly quoted) and plain reference text like `"Chapters 2, 4,
+      and 6"` (passed through unchanged), then a full 21-book regression
+      confirmed byte-identical added/skipped counts and zero rows in any
+      output CSV starting with a stray quote.
+    - **Symlink traversal in `--batch --recursive`.** `Path.rglob()`
+      follows symlinks by default on Python versions before 3.13's
+      `recurse_symlinks` option existed (and even where a symlinked
+      *directory* is no longer followed, a symlinked *.pdf file* sitting
+      directly in the input directory still resolves straight through
+      `is_file()` regardless of Python version -- confirmed by direct
+      test). If `in_dir` came from an untrusted source (e.g. an
+      extracted third-party archive) and contained a symlink pointing
+      outside itself, the batch would silently process a file outside
+      the intended directory and mirror it into the output tree. Fixed
+      by resolving each candidate path and skipping (with a printed
+      warning) any whose real path lands outside `in_dir`'s own resolved
+      root. Verified with a synthetic test: a symlinked `.pdf` pointing
+      to a file outside `in_dir` was correctly skipped with the warning
+      printed, while a legitimate PDF in the same directory was still
+      found and processed normally.
+    Noted but not changed, since neither is a flaw introduced by this
+    script's own logic: (1) resource limits against an adversarially
+    crafted PDF (huge page count, pathological word count) don't exist
+    here, but the actual attack surface for that is PyMuPDF/MuPDF's own
+    C parser, not this script's Python logic; (2) `doc.saveIncr()` (bug
+    #5's deliberate choice) preserves whatever prior revision history
+    already exists in the source PDF's bytes rather than stripping it --
+    relevant only if a user's threat model requires prior redacted/
+    deleted content to be unrecoverable, which was never a stated
+    requirement for this pipeline.
+
+37. **`KNOWN_TRAVELLER_TITLES` had every full compound title ("Traveller
+    Core Rulebook", "Traveller Core Book") but no bare "Core Rulebook"
+    entry -- a real, separate citation shape confirmed in TWO different
+    sub-lines, both producing actual wrong same-book links before the
+    fix.** Found by re-auditing every "added" (same-book) page-reference
+    link across the whole 21-book corpus for one immediately before it
+    that looks like a 2+-word Title-Case phrase -- the same audit
+    approach that caught bug #34's Mercenary wrong link, just run
+    exhaustively this time instead of stopping at the first hit. (Two
+    false leads had to be ruled out first: a naive first pass flagged
+    dozens of hits that turned out to be same-book section/glossary
+    cross-references this book already correctly self-links, like "See
+    Space Combat, page 146" inside the Core Rulebook citing its own
+    chapter; and the scan script itself had a real bug -- using
+    `list.index()` to relocate each CSV row's reference in the page's
+    word list always finds the *first* matching token on the page,
+    silently misattributing context on any page with more than one
+    "page N" citation, which produced a phantom "Traveller Core
+    Rulebook" false alarm on a citation that had nothing to do with it.
+    Fixed by tracking a per-page cursor that advances past every
+    reference in document order, not just the flagged ones.) Two
+    confirmed real wrong links once the scan was trustworthy: Aliens of
+    Charted Space p.139 ("roll on the Injury table of the Core Rulebook
+    (page 47)") and p.272 ("...Mishap Table of the Core Rulebook (page
+    24)") were both being linked into this book's own pages 47/24
+    instead of recognized as citing the (separate, not-in-corpus) core
+    rulebook -- confirmed via `title_bare_before()`'s own trace: it
+    correctly walks backward through "the"/"in"/a digit-led "2300AD" (all
+    allowed to pass through per bugs #26/#34's fixes) and builds up
+    exactly the right phrase, but neither "core rulebook" alone nor the
+    brand-prefixed combination was ever on the list, so it had nothing to
+    match against and fell through as same-book at every step. A third
+    real citation, Tools for Frontier Living p.21 ("...the Organisations
+    chapter in the 2300AD Core Rulebook, (page 83)"), was being linked
+    the same way. Fixed by adding a bare `"core rulebook"` entry.
+    Confirmed safe before adding it: neither actual Core Rulebook PDF (1e
+    or 2e) mentions "Core Rulebook" adjacent to a page number anywhere in
+    its own text at all (both real self-mentions are cover-page/foreword
+    prose with no reference nearby), so this can't cause a same-book
+    self-citation to be wrongly skipped in the one place that would
+    actually matter. Verified with a full 21-book regression: Aliens of
+    Charted Space's added count dropped by exactly 2 (60 → 58, title-skips
+    31 → 33) and Tools for Frontier Living's dropped by exactly 1 (1 → 0,
+    title-skips 5 → 6) -- both books' *only* changes, matching the three
+    citations found -- and all 19 other books produced byte-identical
+    counts. A follow-up `pikepdf` destination + oversized/duplicate-rect
+    sweep came back clean: 2427 links checked (3 fewer than the prior
+    run, matching the 3 flipped references), 0 mismatches, 0 oversized,
+    0 duplicate/overlapping. **General lesson: an allowlist built from
+    the citations seen in the FIRST few books tested will keep missing
+    real citations in later books that abbreviate the same title
+    differently -- re-run the "added link preceded by a Title-Case
+    phrase" audit periodically as more books get tested, the same way
+    bug #34 did once, rather than treating the allowlist as finished
+    after its first pass.**
 
 ## Testing / verification methodology
 

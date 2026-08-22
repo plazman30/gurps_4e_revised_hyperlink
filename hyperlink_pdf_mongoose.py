@@ -41,6 +41,22 @@ import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 from collections import Counter
 
 
+# CSV/formula-injection guard (OWASP): the "Matched Text" and "Detail"
+# report columns are built from PDF-extracted text, which is untrusted if
+# the source PDF itself is (e.g. testing a PDF handed to you rather than
+# one of your own known-good books). A cell beginning with one of these
+# characters is interpreted as a formula by Excel/Sheets when the report
+# CSV is opened there -- prefixing with a literal quote forces plain-text
+# interpretation without changing what a human reader sees.
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    if isinstance(value, str) and value.startswith(CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 NBSP = "\u202f"
 OTHER_SPACES = " \u00a0\u2008"  # regular space, nbsp, punctuation space
 DEFAULT_TRIGGER_WORD = "gurps"   # fallback if title-based auto-detection below fails
@@ -590,6 +606,23 @@ def title_after(words, ref_end_idx, vocab=frozenset()):
 # matching any Title-Case span).
 KNOWN_TRAVELLER_TITLES = {
     "traveller core rulebook", "traveller core book",
+    # Bare "Core Rulebook" (no "Traveller"/"2300AD" brand prefix) is a
+    # separate, real citation shape from the full-title entries above --
+    # confirmed in two different sub-lines: Aliens of Charted Space
+    # ("...roll on the Injury table of the Core Rulebook (page 47)") and
+    # Tools for Frontier Living ("...the Organisations chapter in the
+    # 2300AD Core Rulebook, (page 83)"). In the second case the growing
+    # lookback in title_bare_before() walks straight through "2300AD"
+    # and "the"/"in" (digits and TITLE_CONNECTORS are both allowed
+    # through) but never matched anything, because neither the bare form
+    # nor the brand-prefixed form was on the list -- only the "traveller
+    # core rulebook"/"traveller core book" spellings were. Confirmed safe
+    # to add: neither actual Core Rulebook PDF (1e or 2e) ever mentions
+    # "Core Rulebook" adjacent to a page number anywhere in its own text
+    # (both real mentions are cover-page/foreword prose), so this can't
+    # cause a same-book self-citation to be wrongly skipped in the one
+    # place that would matter.
+    "core rulebook",
     "characters & equipment", "characters and equipment",
     "the worlds of 2300ad",
     "robot handbook", "central supply catalogue",
@@ -1297,7 +1330,7 @@ def hyperlink_pdf(in_path, out_path):
     with open(report_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["PDF Page", "Matched Text", "Ref Number", "Status", "Detail"])
-        writer.writerows(report_rows)
+        writer.writerows(tuple(csv_safe(v) for v in row) for row in report_rows)
 
     print(f"\nAdded {added} page-reference links")
     print(f"  Skipped {skipped_existing} (already linked)")
@@ -1346,8 +1379,25 @@ def run_batch(args):
     out_dir = in_dir.parent / f"{in_dir.name}-hyperlinked"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Path.rglob() follows symlinked subdirectories by default -- if
+    # `in_dir` (e.g. an extracted third-party archive) contains a symlink
+    # pointing outside itself, --recursive would otherwise walk and
+    # process files anywhere else on disk the user can read, and mirror
+    # that structure into out_dir. Resolve each candidate and drop any
+    # whose real path lands outside in_dir's own resolved root.
+    resolved_root = in_dir.resolve()
     globber = in_dir.rglob if args.recursive else in_dir.glob
-    pdf_paths = sorted(p for p in globber("*") if p.is_file() and p.suffix.lower() == ".pdf")
+    pdf_paths = []
+    for p in globber("*"):
+        if not p.is_file() or p.suffix.lower() != ".pdf":
+            continue
+        try:
+            p.resolve().relative_to(resolved_root)
+        except ValueError:
+            print(f"Skipping {p} -- resolves outside {in_dir} (symlink?)", file=sys.stderr)
+            continue
+        pdf_paths.append(p)
+    pdf_paths.sort()
 
     if not pdf_paths:
         print(f"No PDFs found in {in_dir}"
