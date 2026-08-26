@@ -8,7 +8,10 @@ optional back cover that can sit anywhere in the file (front matter,
 the body, or the very end) rather than only ever being the last page.
 
 USAGE:
-    python3 fix_page_labels.py INPUT.pdf OUTPUT.pdf
+    python3 fix_page_labels.py INPUT.pdf [OUTPUT.pdf]
+
+    OUTPUT.pdf is optional -- if omitted, writes INPUT-renumbered.pdf
+    next to the input file.
 
 Prompts for:
   1. Whether PDF page 1 is the front cover.
@@ -34,6 +37,7 @@ REQUIREMENTS:
 
 import sys
 import shutil
+from pathlib import Path
 import pikepdf
 
 
@@ -181,10 +185,15 @@ def gather_inputs(page_count):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python3 fix_page_labels.py INPUT.pdf OUTPUT.pdf")
+    if len(sys.argv) not in (2, 3):
+        print("Usage: python3 fix_page_labels.py INPUT.pdf [OUTPUT.pdf]")
         sys.exit(1)
-    in_path, out_path = sys.argv[1], sys.argv[2]
+    in_path = sys.argv[1]
+    if len(sys.argv) == 3:
+        out_path = sys.argv[2]
+    else:
+        p = Path(in_path)
+        out_path = str(p.with_name(f"{p.stem}-renumbered{p.suffix}"))
 
     with pikepdf.open(in_path) as probe:
         page_count = len(probe.pages)
