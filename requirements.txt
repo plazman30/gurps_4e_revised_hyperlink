@@ -1,3 +1,4 @@
 PyMuPDF>=1.23.0
 pypdf>=5.0.0
 pikepdf>=8.0.0
+textual>=0.60.0
