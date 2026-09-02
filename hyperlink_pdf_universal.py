@@ -661,15 +661,32 @@ def hyperlink_pdf(in_path, out_path):
               f"setting TITLE_TRIGGER_WORD manually near the top of the script.")
 
     print("Detecting page-numbering scheme...")
-    offset, valid_range = detect_page_labels(doc)
-    print(f"  Body pages: printed {valid_range[0]}-{valid_range[1]}, "
-          f"pdf_index = printed_number + {offset}")
+    # Prefer the PDF's own /PageLabels when it has a usable arabic set:
+    # a direct label -> index dict handles files with several offsets
+    # (e.g. a combined two-volume Basic Set) that the single-offset
+    # footer vote below cannot. Fall back to the footer vote otherwise.
+    label_to_index = {}
+    for i in range(doc.page_count):
+        lab = doc[i].get_label()
+        if lab and lab.isdigit():
+            label_to_index.setdefault(int(lab), i)
+    use_labels = len(label_to_index) >= max(10, doc.page_count // 2)
+    if use_labels:
+        offset, valid_range = None, (min(label_to_index), max(label_to_index))
+        print(f"  Using the PDF's own page labels: {len(label_to_index)} "
+              f"arabic-labeled pages, printed {valid_range[0]}-{valid_range[1]}")
+    else:
+        offset, valid_range = detect_page_labels(doc)
+        print(f"  Body pages: printed {valid_range[0]}-{valid_range[1]}, "
+              f"pdf_index = printed_number + {offset}")
 
     index_pages = detect_index_pages(doc)
     print(f"  Detected {len(index_pages)} Index page(s) "
           f"(header word match: {sorted(INDEX_HEADER_WORDS)})")
 
     def printed_to_index(n):
+        if use_labels:
+            return label_to_index.get(n)
         idx = n + offset
         if valid_range[0] <= n <= valid_range[1]:
             return idx
