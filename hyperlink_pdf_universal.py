@@ -97,18 +97,24 @@ def bottom_words(page, band=45):
     return [w for w in page.get_text("words") if w[3] > h - band]
 
 
-def detect_page_labels(doc):
-    """Scan footers to find the arabic body-page offset and valid range."""
-    offsets = []
-    arabic_numbers_seen = []
-
+def footer_observations(doc):
+    """Every (pdf_index, printed_number) pair visible in a page's
+    header/footer band -- the raw evidence both numbering detectors use."""
+    obs = []
     for i in range(doc.page_count):
-        tokens = [w[4].strip(".,") for w in bottom_words(doc[i])]
-        for t in tokens:
+        for w in bottom_words(doc[i]):
+            t = w[4].strip(".,")
             if t.isdigit():
-                n = int(t)
-                offsets.append(i - n)
-                arabic_numbers_seen.append(n)
+                obs.append((i, int(t)))
+    return obs
+
+
+def detect_page_labels(doc, obs=None):
+    """Scan footers to find the arabic body-page offset and valid range."""
+    if obs is None:
+        obs = footer_observations(doc)
+    offsets = [i - n for i, n in obs]
+    arabic_numbers_seen = [n for _, n in obs]
 
     if not offsets:
         raise RuntimeError(
@@ -661,22 +667,32 @@ def hyperlink_pdf(in_path, out_path):
               f"setting TITLE_TRIGGER_WORD manually near the top of the script.")
 
     print("Detecting page-numbering scheme...")
-    # Prefer the PDF's own /PageLabels when it has a usable arabic set:
-    # a direct label -> index dict handles files with several offsets
-    # (e.g. a combined two-volume Basic Set) that the single-offset
-    # footer vote below cannot. Fall back to the footer vote otherwise.
+    # Prefer the PDF's own /PageLabels when they are trustworthy: a direct
+    # label -> index dict handles files with several offsets (e.g. a
+    # combined two-volume Basic Set) that the single-offset footer vote
+    # below cannot. "Trustworthy" means the labels agree with the printed
+    # numbers actually seen in footers on most pages -- many PDFs carry
+    # only the default physical numbering as labels, and trusting those
+    # would put every link a few pages off. Fall back to the vote otherwise.
+    obs = footer_observations(doc)
     label_to_index = {}
     for i in range(doc.page_count):
         lab = doc[i].get_label()
         if lab and lab.isdigit():
             label_to_index.setdefault(int(lab), i)
-    use_labels = len(label_to_index) >= max(10, doc.page_count // 2)
+    agree = sum(1 for i, n in obs if label_to_index.get(n) == i)
+    use_labels = (len(label_to_index) >= max(10, doc.page_count // 2)
+                  and obs and agree / len(obs) >= 0.5)
     if use_labels:
         offset, valid_range = None, (min(label_to_index), max(label_to_index))
         print(f"  Using the PDF's own page labels: {len(label_to_index)} "
-              f"arabic-labeled pages, printed {valid_range[0]}-{valid_range[1]}")
+              f"arabic-labeled pages, printed {valid_range[0]}-{valid_range[1]} "
+              f"(labels agree with {agree}/{len(obs)} footer numbers)")
     else:
-        offset, valid_range = detect_page_labels(doc)
+        if label_to_index:
+            print(f"  Ignoring the PDF's page labels: they agree with only "
+                  f"{agree}/{len(obs)} footer numbers")
+        offset, valid_range = detect_page_labels(doc, obs)
         print(f"  Body pages: printed {valid_range[0]}-{valid_range[1]}, "
               f"pdf_index = printed_number + {offset}")
 
