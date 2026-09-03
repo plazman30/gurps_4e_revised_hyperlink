@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tag_borders_ocg.py
+gurps_4e_revised_tag_borders_ocg.py
 
 Wraps colored border content in Optional Content Groups (PDF "layers")
 so it can be toggled on/off in any viewer that supports PDF layers
@@ -43,13 +43,13 @@ Three layers are produced:
 Usage
 -----
     # Test on a page range first (0-indexed, inclusive):
-    python3 tag_borders_ocg.py input.pdf test_output.pdf --pages 10-40
+    python3 gurps_4e_revised_tag_borders_ocg.py input.pdf test_output.pdf --pages 10-40
 
     # Full document:
-    python3 tag_borders_ocg.py input.pdf output.pdf
+    python3 gurps_4e_revised_tag_borders_ocg.py input.pdf output.pdf
 
     # Dry run (report only, no file written):
-    python3 tag_borders_ocg.py input.pdf output.pdf --dry-run
+    python3 gurps_4e_revised_tag_borders_ocg.py input.pdf output.pdf --dry-run
 """
 
 import argparse

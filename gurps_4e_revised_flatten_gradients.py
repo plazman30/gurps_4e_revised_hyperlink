@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-flatten_gradients.py
+gurps_4e_revised_flatten_gradients.py
 
 Replaces every gradient shading fill (`sh` operator) in the PDF with a
 solid, flat-color fill, instead of the color ramp.
@@ -35,7 +35,7 @@ for type 0 (sampled - uses the midpoint of /Range).
 
 Usage
 -----
-    python3 flatten_gradients.py input.pdf output.pdf [--pages 10-40] [--dry-run]
+    python3 gurps_4e_revised_flatten_gradients.py input.pdf output.pdf [--pages 10-40] [--dry-run]
 """
 
 import argparse
