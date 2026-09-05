@@ -684,9 +684,28 @@ def hyperlink_pdf(in_path, out_path):
     use_labels = (len(label_to_index) >= max(10, doc.page_count // 2)
                   and obs and agree / len(obs) >= 0.5)
     if use_labels:
+        # Even once the labels pass the whole-book agreement check above,
+        # trust an INDIVIDUAL label -> index mapping only when that exact
+        # page's own footer visibly shows that same number. A /PageLabels
+        # entry can exist on a page with no printed folio at all -- a
+        # title/credits page counted as the nominal start of a numbering
+        # run, or (confirmed on a real combined two-volume file) a
+        # back-matter ad page whose label just continues the boxed set's
+        # overall page count even though it holds none of that volume's
+        # real content. Trusting an unconfirmed label sent a same-book-
+        # looking "p. 337" reference straight to an unrelated ad insert on
+        # that file. An unconfirmed number simply isn't resolvable via the
+        # label path -- it falls through exactly like an out-of-range page
+        # already does, rather than risk linking into whatever the label
+        # happens to point at.
+        obs_set = set(obs)
+        label_to_index = {
+            n: i for n, i in label_to_index.items() if (i, n) in obs_set
+        }
         offset, valid_range = None, (min(label_to_index), max(label_to_index))
         print(f"  Using the PDF's own page labels: {len(label_to_index)} "
-              f"arabic-labeled pages, printed {valid_range[0]}-{valid_range[1]} "
+              f"confirmed by a visible footer number, printed "
+              f"{valid_range[0]}-{valid_range[1]} "
               f"(labels agree with {agree}/{len(obs)} footer numbers)")
     else:
         if label_to_index:
