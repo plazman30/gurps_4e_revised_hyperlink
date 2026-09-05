@@ -24,7 +24,15 @@ Prompts for:
   2. Whether the back cover is the last page -- if not, what page it is
      (press Enter for "no back cover at all").
   3. What PDF page is actually printed page "1" (where arabic numbering
-     starts).
+     starts). If PyMuPDF is installed, this is pre-filled with a guess
+     from scanning each page's footer for a printed number (same
+     technique as hyperlink_pdf_universal.py's own page-numbering
+     detection) -- press Enter to accept it, or type over it. Never
+     applied without this confirmation step. If the guess is only an
+     extrapolation (the pages right before it have no visible page
+     number of their own to confirm it directly -- a bare cover plus an
+     unnumbered copyright page is common), a note names the uncertain
+     page range so you know to double-check it rather than just trust it.
 
 Labeling rules:
   - The front cover (if any) and the back cover (if any) are both
@@ -44,8 +52,109 @@ REQUIREMENTS:
 
 import sys
 import shutil
+from collections import Counter
 from pathlib import Path
 import pikepdf
+
+
+MIN_FOOTER_OBSERVATIONS = 3   # below this, there's not enough evidence to suggest anything
+MIN_FOOTER_AGREEMENT = 0.5    # the winning offset must explain at least this fraction
+
+
+def detect_printed_page1(in_path, band=45):
+    """Best-effort auto-detect of which PDF page is printed page 1, by
+    scanning each page's bottom margin for a printed arabic page number --
+    the same footer-scanning technique hyperlink_pdf_universal.py's
+    detect_page_labels() already uses (band=45, strip trailing '.'/',',
+    vote on the most common pdf_index-minus-printed-number offset across
+    the whole book) and has real-book mileage behind it.
+
+    This is a SUGGESTION ONLY, never applied without the user confirming
+    it -- a per-page footer read can be wrong for reasons this project's
+    own bug history documents repeatedly: a stray digit near the bottom
+    margin that isn't actually a page number, a page that genuinely has
+    no footer number at all (a title page, a chapter divider, a
+    back-matter ad), or a line rendered twice for a bold effect. The
+    majority vote absorbs a few bad individual reads; it doesn't absorb a
+    systematically wrong assumption about this specific book's layout,
+    which is exactly why this stays a prefill the user can see and
+    override rather than a silent default.
+
+    Returns (page1_idx, agreeing_count, total_count, ambiguous_from) --
+    page1_idx is the 0-based PDF index the winning offset predicts
+    printed page "1" falls on. ambiguous_from is the earliest PDF index
+    that's equally plausible: the offset vote only has direct evidence
+    from pages that actually show a printed number, so if the pages
+    immediately before page1_idx have NO footer number at all (a bare
+    cover, an unnumbered copyright/legal page, both very common), the
+    vote can't distinguish "page 1 is right here" from "page 1 is
+    actually one of those earlier, equally blank pages" -- confirmed as
+    a real failure mode, not a theoretical one, testing this against
+    real Mongoose Traveller books: several have a cover AND a copyright
+    page both without a visible folio before the numbering visibly
+    starts, and the naive single-guess version of this function
+    confidently landed one page too late on all of them. ambiguous_from
+    equals page1_idx exactly when there's no such run (the immediately
+    preceding page already has its own, different footer number, so
+    page1_idx isn't ambiguous at all).
+
+    Returns None if PyMuPDF isn't installed, no footer numbers were
+    found at all, the winning offset doesn't clear MIN_FOOTER_OBSERVATIONS/
+    MIN_FOOTER_AGREEMENT, or it predicts a page1 index outside the
+    document entirely (all signs the book's layout doesn't match this
+    script's front-matter/body-numbering assumption closely enough to
+    guess safely)."""
+    try:
+        import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
+    except ImportError:
+        return None
+
+    doc = fitz.open(in_path)
+    try:
+        page_count = doc.page_count
+        observations = []  # (pdf_index, printed_number), mirroring
+                            # hyperlink_pdf_universal.py's own footer_observations()
+        for i in range(page_count):
+            h = doc[i].rect.height
+            for w in doc[i].get_text("words"):
+                if w[3] <= h - band:
+                    continue
+                tok = w[4].strip(".,")
+                if tok.isdigit():
+                    observations.append((i, int(tok)))
+    finally:
+        doc.close()
+
+    if not observations:
+        return None
+
+    offsets = [i - n for i, n in observations]
+    (best_offset, best_count), = Counter(offsets).most_common(1)
+    if best_count < MIN_FOOTER_OBSERVATIONS or best_count / len(offsets) < MIN_FOOTER_AGREEMENT:
+        return None
+
+    page1_idx = 1 + best_offset
+    if not (0 <= page1_idx < page_count):
+        return None
+
+    # If page1_idx's own footer literally shows "1", that's direct
+    # confirmation -- no ambiguity, regardless of what precedes it (e.g.
+    # AdventureClassShips: PDF index 1 really does print "1" in its
+    # footer, so it doesn't matter that index 0, the cover, has none).
+    # Otherwise page1_idx is only an extrapolation from the offset vote,
+    # and pages immediately before it with NO footer digit of their own
+    # (any digit, not just ones agreeing with the winning offset -- a
+    # page showing some OTHER, unrelated number is still real evidence
+    # against page 1 being there) are equally plausible candidates.
+    if (page1_idx, 1) in observations:
+        ambiguous_from = page1_idx
+    else:
+        pages_with_digit = {i for i, _ in observations}
+        ambiguous_from = page1_idx
+        while ambiguous_from - 1 >= 0 and (ambiguous_from - 1) not in pages_with_digit:
+            ambiguous_from -= 1
+
+    return page1_idx, best_count, len(offsets), ambiguous_from
 
 
 _ROMAN_NUMERALS = [
@@ -146,9 +255,11 @@ def ask_yes_no(prompt):
         print("Please answer y or n.")
 
 
-def ask_int(prompt, low, high):
+def ask_int(prompt, low, high, default=None):
     while True:
         raw = input(prompt).strip()
+        if not raw and default is not None:
+            return default
         if not raw.isdigit():
             print("Please enter a page number.")
             continue
@@ -159,7 +270,7 @@ def ask_int(prompt, low, high):
         return n
 
 
-def gather_inputs(page_count):
+def gather_inputs(page_count, page1_suggestion=None):
     is_cover = ask_yes_no("Is Page 1 the cover?")
 
     back_cover_idx = None
@@ -175,10 +286,18 @@ def gather_inputs(page_count):
                          f"(1-{page_count}).")
             back_cover_idx = int(raw) - 1
 
-    page1_page = ask_int(
-        f"What page in the PDF is actually page 1? (1-{page_count}): ",
-        1, page_count,
-    )
+    if page1_suggestion is not None:
+        default_page1 = page1_suggestion + 1
+        page1_page = ask_int(
+            f"What page in the PDF is actually page 1? "
+            f"(1-{page_count}, Enter for detected page {default_page1}): ",
+            1, page_count, default=default_page1,
+        )
+    else:
+        page1_page = ask_int(
+            f"What page in the PDF is actually page 1? (1-{page_count}): ",
+            1, page_count,
+        )
     page1_idx = page1_page - 1
 
     if is_cover and page1_idx == 0:
@@ -191,7 +310,7 @@ def gather_inputs(page_count):
     return is_cover, back_cover_idx, page1_idx
 
 
-def build_tui_app(in_path, out_path, page_count):
+def build_tui_app(in_path, out_path, page_count, page1_suggestion=None, ambiguous_from=None):
     """Lazily imports Textual and builds (but does not run) the wizard App:
     a single form screen collecting the same three answers gather_inputs()
     asks sequentially, then a preview of the computed label ranges before
@@ -269,8 +388,21 @@ def build_tui_app(in_path, out_path, page_count):
                             restrict=r"[0-9]*", id="backcover_page", compact=True)
                 yield Static("What PDF page is actually page 1?",
                              classes="field-label")
-                yield Input(placeholder=f"1-{self.app.page_count}",
-                            restrict=r"[0-9]*", id="page1", compact=True)
+                yield Input(
+                    placeholder=f"1-{self.app.page_count}",
+                    value=(str(self.app.page1_suggestion + 1)
+                           if self.app.page1_suggestion is not None else ""),
+                    restrict=r"[0-9]*", id="page1", compact=True,
+                )
+                if self.app.page1_suggestion is not None:
+                    hint = "Detected from footer text -- edit if wrong"
+                    if self.app.ambiguous_from < self.app.page1_suggestion:
+                        hint = (
+                            f"Detected from footer text, but PDF pages "
+                            f"{self.app.ambiguous_from + 1}-{self.app.page1_suggestion + 1} "
+                            f"have no page number of their own -- check that range"
+                        )
+                    yield Static(hint, classes="hint")
                 yield Static("", id="error", classes="error")
                 with Horizontal():
                     yield Button("Preview", id="preview", variant="success", compact=True)
@@ -432,6 +564,8 @@ def build_tui_app(in_path, out_path, page_count):
             self.in_path = in_path
             self.out_path = out_path
             self.page_count = page_count
+            self.page1_suggestion = page1_suggestion
+            self.ambiguous_from = ambiguous_from if ambiguous_from is not None else page1_suggestion
             self.is_cover = None
             self.back_cover_idx = None
             self.page1_idx = None
@@ -443,11 +577,12 @@ def build_tui_app(in_path, out_path, page_count):
     return LabelWizardApp()
 
 
-def run_tui(in_path, out_path, page_count):
+def run_tui(in_path, out_path, page_count, page1_suggestion=None, detected=None):
     """Runs the wizard from build_tui_app() in a real terminal. Returns
     (is_cover, back_cover_idx, page1_idx), or None if the user quit
     without confirming."""
-    app = build_tui_app(in_path, out_path, page_count)
+    ambiguous_from = detected[3] if detected else page1_suggestion
+    app = build_tui_app(in_path, out_path, page_count, page1_suggestion, ambiguous_from)
     app.run()
     if not app.confirmed:
         return None
@@ -479,14 +614,26 @@ def main():
     except pikepdf.PdfError as e:
         sys.exit(f"Error: {in_path!r} doesn't look like a valid PDF ({e}).")
 
+    detected = detect_printed_page1(in_path)
+    page1_suggestion = detected[0] if detected else None
+
     if use_tui:
-        result = run_tui(in_path, out_path, page_count)
+        result = run_tui(in_path, out_path, page_count, page1_suggestion, detected)
         if result is None:
             sys.exit("Aborted.")
         is_cover, back_cover_idx, page1_idx = result
     else:
-        print(f"{in_path}: {page_count} pages\n")
-        is_cover, back_cover_idx, page1_idx = gather_inputs(page_count)
+        print(f"{in_path}: {page_count} pages")
+        if detected:
+            _, agreeing, total, ambiguous_from = detected
+            print(f"Detected printed page 1 at PDF page {page1_suggestion + 1} "
+                  f"(footer text agreed on {agreeing}/{total} pages)")
+            if ambiguous_from < page1_suggestion:
+                print(f"  Note: PDF pages {ambiguous_from + 1}-{page1_suggestion + 1} "
+                      f"all have no visible page number of their own -- if page 1 "
+                      f"actually looks different, check that range before accepting.")
+        print()
+        is_cover, back_cover_idx, page1_idx = gather_inputs(page_count, page1_suggestion)
 
     ranges = compute_label_ranges(page_count, is_cover, back_cover_idx, page1_idx)
 
