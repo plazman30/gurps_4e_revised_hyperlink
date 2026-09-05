@@ -95,6 +95,7 @@ LAYERS = {
 }
 
 EDGE_BORDER_THICKNESS = 10  # points, not pixels - PDF user space has no native "pixel"
+TUI_AUTO_CLOSE_SECONDS = 3  # how long the --tui progress window lingers after finishing
 
 STROKE_COLOR_OPS = {"K", "RG", "G"}       # stroking CMYK / RGB / Gray color setters
 FILL_COLOR_OPS = {"k", "rg", "g"}         # nonstroking CMYK / RGB / Gray color setters
@@ -776,20 +777,26 @@ def build_tui_app(pdf, page_range, ocgs, dry_run):
     grab an unstarted instance and drive it via Textual's run_test() -
     same split as fix_page_labels.py's build_tui_app()/run_tui(). The
     actual pikepdf work runs in a background worker thread (`thread=True`)
-    so the progress bar and log keep redrawing smoothly instead of
-    freezing for the whole run; widget updates from that thread go
-    through call_from_thread(), since Textual widgets aren't otherwise
-    thread-safe to touch directly."""
+    so the progress bar keeps redrawing smoothly instead of freezing for
+    the whole run; widget updates from that thread go through
+    call_from_thread(), since Textual widgets aren't otherwise thread-safe
+    to touch directly.
+
+    Just the bar itself, deliberately - an earlier version also had a
+    RichLog panel dumping every tagged page's counts as scrolling text,
+    which the user found noisy for what's meant to be a simple progress
+    indicator. Per-page detail is still available via the plain-text mode
+    (no --tui) or the CSV-less console summary main() prints once this
+    app exits; this view is only for watching a long run's progress."""
 
     from textual.app import App, ComposeResult
-    from textual.widgets import Header, Footer, ProgressBar, RichLog
+    from textual.widgets import Header, Footer, ProgressBar
 
     total_pages = len(page_range)
 
     class TagBordersApp(App):
         CSS = """
-        ProgressBar { margin: 1 2; }
-        RichLog { border: round $accent; margin: 0 2 1 2; height: 1fr; }
+        ProgressBar { align: center middle; margin: 2; }
         """
         BINDINGS = [("q", "quit", "Quit")]
 
@@ -802,7 +809,6 @@ def build_tui_app(pdf, page_range, ocgs, dry_run):
         def compose(self) -> ComposeResult:
             yield Header()
             yield ProgressBar(total=total_pages, id="progress")
-            yield RichLog(id="log", wrap=False, highlight=False, markup=False)
             yield Footer()
 
         def on_mount(self):
@@ -811,7 +817,6 @@ def build_tui_app(pdf, page_range, ocgs, dry_run):
             self.run_worker(self.run_tagging, thread=True)
 
         def run_tagging(self):
-            log = self.query_one("#log", RichLog)
             bar = self.query_one("#progress", ProgressBar)
             done = 0
             for _i, counts, line in process_pages(pdf, page_range, ocgs, dry_run):
@@ -820,14 +825,40 @@ def build_tui_app(pdf, page_range, ocgs, dry_run):
                     self.pages_touched += 1
                     for k in self.totals:
                         self.totals[k] += counts[k]
-                    self.call_from_thread(log.write, line)
                 self.call_from_thread(bar.advance, 1)
                 self.call_from_thread(
                     setattr, self, "sub_title", f"{done} / {total_pages} pages"
                 )
             self.finished = True
-            self.call_from_thread(log.write, "\nDone. Press q to continue.")
-            self.call_from_thread(setattr, self, "title", "Tagging borders — complete")
+            # Hand off to the main thread ONCE, right as this worker
+            # finishes, rather than sleeping in a loop here and calling
+            # self.exit() from this thread afterward - an earlier version
+            # did exactly that, and while it looked fine in Textual's own
+            # run_test() harness, it hung indefinitely in a real terminal
+            # (confirmed by adding temporary file-based debug logging
+            # around each step, independent of the pty's own stdout/
+            # stderr, since the hang made the TUI's own on-screen state
+            # useless for diagnosis at that point). The countdown itself
+            # runs as a native Textual timer on the main thread instead,
+            # well after this worker has already returned - re-verified
+            # hang-free across multiple repeated real-pty runs afterward.
+            self.call_from_thread(self.start_auto_close)
+
+        def start_auto_close(self):
+            self.title = "Tagging borders — complete"
+            self._remaining = TUI_AUTO_CLOSE_SECONDS
+            self._show_countdown()
+            self.set_interval(1, self._tick_countdown)
+
+        def _show_countdown(self):
+            self.sub_title = f"Done — closing in {self._remaining}s (press q to close now)"
+
+        def _tick_countdown(self):
+            self._remaining -= 1
+            if self._remaining <= 0:
+                self.exit()
+            else:
+                self._show_countdown()
 
     return TagBordersApp()
 
