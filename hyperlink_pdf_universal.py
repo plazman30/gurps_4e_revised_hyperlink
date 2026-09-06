@@ -97,18 +97,24 @@ def bottom_words(page, band=45):
     return [w for w in page.get_text("words") if w[3] > h - band]
 
 
-def detect_page_labels(doc):
-    """Scan footers to find the arabic body-page offset and valid range."""
-    offsets = []
-    arabic_numbers_seen = []
-
+def footer_observations(doc):
+    """Every (pdf_index, printed_number) pair visible in a page's
+    header/footer band -- the raw evidence both numbering detectors use."""
+    obs = []
     for i in range(doc.page_count):
-        tokens = [w[4].strip(".,") for w in bottom_words(doc[i])]
-        for t in tokens:
+        for w in bottom_words(doc[i]):
+            t = w[4].strip(".,")
             if t.isdigit():
-                n = int(t)
-                offsets.append(i - n)
-                arabic_numbers_seen.append(n)
+                obs.append((i, int(t)))
+    return obs
+
+
+def detect_page_labels(doc, obs=None):
+    """Scan footers to find the arabic body-page offset and valid range."""
+    if obs is None:
+        obs = footer_observations(doc)
+    offsets = [i - n for i, n in obs]
+    arabic_numbers_seen = [n for _, n in obs]
 
     if not offsets:
         raise RuntimeError(
@@ -661,15 +667,61 @@ def hyperlink_pdf(in_path, out_path):
               f"setting TITLE_TRIGGER_WORD manually near the top of the script.")
 
     print("Detecting page-numbering scheme...")
-    offset, valid_range = detect_page_labels(doc)
-    print(f"  Body pages: printed {valid_range[0]}-{valid_range[1]}, "
-          f"pdf_index = printed_number + {offset}")
+    # Prefer the PDF's own /PageLabels when they are trustworthy: a direct
+    # label -> index dict handles files with several offsets (e.g. a
+    # combined two-volume Basic Set) that the single-offset footer vote
+    # below cannot. "Trustworthy" means the labels agree with the printed
+    # numbers actually seen in footers on most pages -- many PDFs carry
+    # only the default physical numbering as labels, and trusting those
+    # would put every link a few pages off. Fall back to the vote otherwise.
+    obs = footer_observations(doc)
+    label_to_index = {}
+    for i in range(doc.page_count):
+        lab = doc[i].get_label()
+        if lab and lab.isdigit():
+            label_to_index.setdefault(int(lab), i)
+    agree = sum(1 for i, n in obs if label_to_index.get(n) == i)
+    use_labels = (len(label_to_index) >= max(10, doc.page_count // 2)
+                  and obs and agree / len(obs) >= 0.5)
+    if use_labels:
+        # Even once the labels pass the whole-book agreement check above,
+        # trust an INDIVIDUAL label -> index mapping only when that exact
+        # page's own footer visibly shows that same number. A /PageLabels
+        # entry can exist on a page with no printed folio at all -- a
+        # title/credits page counted as the nominal start of a numbering
+        # run, or (confirmed on a real combined two-volume file) a
+        # back-matter ad page whose label just continues the boxed set's
+        # overall page count even though it holds none of that volume's
+        # real content. Trusting an unconfirmed label sent a same-book-
+        # looking "p. 337" reference straight to an unrelated ad insert on
+        # that file. An unconfirmed number simply isn't resolvable via the
+        # label path -- it falls through exactly like an out-of-range page
+        # already does, rather than risk linking into whatever the label
+        # happens to point at.
+        obs_set = set(obs)
+        label_to_index = {
+            n: i for n, i in label_to_index.items() if (i, n) in obs_set
+        }
+        offset, valid_range = None, (min(label_to_index), max(label_to_index))
+        print(f"  Using the PDF's own page labels: {len(label_to_index)} "
+              f"confirmed by a visible footer number, printed "
+              f"{valid_range[0]}-{valid_range[1]} "
+              f"(labels agree with {agree}/{len(obs)} footer numbers)")
+    else:
+        if label_to_index:
+            print(f"  Ignoring the PDF's page labels: they agree with only "
+                  f"{agree}/{len(obs)} footer numbers")
+        offset, valid_range = detect_page_labels(doc, obs)
+        print(f"  Body pages: printed {valid_range[0]}-{valid_range[1]}, "
+              f"pdf_index = printed_number + {offset}")
 
     index_pages = detect_index_pages(doc)
     print(f"  Detected {len(index_pages)} Index page(s) "
           f"(header word match: {sorted(INDEX_HEADER_WORDS)})")
 
     def printed_to_index(n):
+        if use_labels:
+            return label_to_index.get(n)
         idx = n + offset
         if valid_range[0] <= n <= valid_range[1]:
             return idx
