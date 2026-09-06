@@ -27,7 +27,7 @@ without linking a reference that's actually citing a *different* book.
 
 | File | Purpose |
 |---|---|
-| `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), and a TOC self-hyperlinking pass for books that ship without one (see below). Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
+| `hyperlink_pdf_universal.py` | **Current active development version for GURPS books — start here for those.** Superset of everything below: page references, Index, chapter references (including comma-separated lists like "Chapters 2, 4, and 6"), GURPS book-code shorthand (`p. B123`), an auto-detected cross-book trigger word (pulled from the PDF's own title metadata instead of hardcoded "GURPS"), a known-title allowlist for bare italicized citations ("High-Tech, pp. 13-15" with no "GURPS" prefix), a TOC self-hyperlinking pass for books that ship without one (see below), and — since bug #38 — an optional `/PageLabels`-based lookup path for page-number resolution, used when the labels are trustworthy, that handles a multi-offset combined book the single-offset footer vote alone cannot. Validated against multiple real GURPS books, including a non-Basic-Set supplement (GURPS High-Tech: Electricity and Electronics) and GURPS Space specifically for the TOC feature. |
 | `hyperlink_pdf_mongoose.py` | **First real non-GURPS test, and the current version for Mongoose Publishing's Traveller line — both 2nd edition and 1st edition.** A fork of `hyperlink_pdf_universal.py`'s logic, not a from-scratch rewrite — same architecture (footer-offset page-label detection, TOC/Index protection, cross-book filtering layers, rect-safety checks), adapted where real Mongoose books actually diverged from GURPS conventions. Verified against four distinct sub-products in the line: the 2e Traveller Core Rulebook/Companion/High Guard/Aliens of Charted Space set (bugs #20-#25), the 2300AD boxed set (bug #26), 1st-edition Traveller — Core Rulebook, two Alien Modules, two numbered "Little Black Book" reprints (Mercenary, Robot), Cosmopolite, and two Sector sourcebooks (bugs #28-#29), and, separately again, both volumes of *Aliens of Charted Space* itself (bug #30). 1e uses a completely different `/Info Title` naming convention (`"Book 9: Robot"`); the *Aliens of Charted Space* pass turned up a real same-book false-positive class (`title_after()`/`title_nearby()` mistaking a book's own chapter name for another product, bug #29) and a heading-detection gap on a book whose "CONTENTS" heading uses a smaller, faux-bold-doubled rendering the original bug #20 heuristics never saw (bug #30) — neither of which showed up in the sub-products tested before it. This confirms the "Known open limitations" prediction below was wrong in specifics but right in spirit — nothing crashed, but several features silently would have found nothing (or wrongly skipped real links) without these changes, and testing some sub-products never fully covered the others (bugs #26, #29, #30, #31, #32, #33, #34, #35, #36, #37). Two of the nine 1e test books (a sector gazetteer, an alphabetized encyclopedia) legitimately have zero internal page citations at all — confirmed by a direct full-text search, not assumed — so "0 links added" there is correct output, not a miss. See bugs #20-#37 below for exactly what differs and why; kept as a fully separate script rather than adding publisher-conditional branches to `hyperlink_pdf_universal.py`, matching the precedent set by `combine_gurps_basic_set.py` (bug #19) of forking instead of generalizing a single-book-family assumption. |
 | `hyperlink_pdf.py` | The original stable, verified version predating the universal rewrite. Links `p. NNN` / `pp. NNN-NNN` page references and Index-style bare numbers only — no chapters, no TOC self-linking, no book-code/italic-title cross-book detection. Kept as a known-good fallback reference point. |
 | `hyperlink_pdf_v2_chapters.py` | Intermediate version, superseded by `hyperlink_pdf_universal.py`. Kept for history; no reason to use it over the universal version now. |
@@ -79,13 +79,22 @@ The user then asked for the `--tui` window to auto-close a few seconds after fin
   scheme (roman front matter, arabic body, whatever offset applies) is
   detected by scanning every page's footer/header band for digit tokens and
   taking the *mode* of `(pdf_index - printed_number)` across the whole
-  document. This is robust to a handful of noisy/wrong footer reads but will
-  need re-thinking for a book with a fundamentally different numbering
-  scheme (e.g. per-chapter restarts) — confirmed in practice by bug #19
-  below, where a file spliced together from two independently-paginated
-  books broke this assumption outright; `combine_gurps_basic_set.py` works around
-  it locally rather than fixing it here, so this limitation still stands
-  for this function/script.
+  document. This is robust to a handful of noisy/wrong footer reads but
+  assumes a single offset for the whole book — confirmed broken in
+  practice by bug #19, where a file spliced together from two
+  independently-paginated books defeated it outright (`combine_gurps_basic_set.py`
+  worked around it locally there, rather than fixing it in this function).
+  `hyperlink_pdf_universal.py` itself since gained a second path for
+  exactly this case (bug #38): when the PDF's own `/PageLabels` are
+  present and agree with the real footer numbers on most pages, a direct
+  `printed_number -> pdf_index` dict is used instead of the single-offset
+  vote — but only for the individual page-label entries that a page's own
+  footer directly confirms, never for one that exists purely as metadata
+  with nothing backing it (also bug #38, a real regression found in
+  review). This helps only when a PDF happens to carry trustworthy labels
+  in the first place; a book with no `/PageLabels` at all, or a
+  fundamentally different numbering scheme (e.g. per-chapter restarts),
+  still falls back to the single-offset vote and its same limitation.
 - **The Table of Contents is protected implicitly, and self-hyperlinked if
   it appears to lack links entirely.** Protection: before inserting any
   link anywhere in the book, the code checks whether that spot is already
@@ -947,6 +956,99 @@ first.
     phrase" audit periodically as more books get tested, the same way
     bug #34 did once, rather than treating the allowlist as finished
     after its first pass.**
+
+38. **The first *external contribution* to this codebase (GitHub PR #1,
+    from a real other contributor, not written or tested from inside
+    this project's own dev loop) added an alternative to
+    `detect_page_labels()`'s single-global-offset assumption (see the
+    "Nothing about page numbering is hardcoded" bullet above, and bug
+    #19): when a PDF carries its own `/PageLabels` and they're
+    trustworthy, build a direct `printed_number -> pdf_index` dict from
+    them instead of voting on one offset for the whole book. This is the
+    generalized version of the fix bug #19 built one-off, inline, for
+    `combine_gurps_basic_set.py` alone — motivated by the same underlying
+    problem (a file assembled from more than one independently-paginated
+    source), just for any PDF that happens to ship with correct labels
+    already, not only that one script's own merge output. "Trustworthy"
+    is a whole-book check: the labels have to agree with the real footer
+    numbers on at least half of all observed pages (`footer_observations()`,
+    factored out of `detect_page_labels()` so both the vote and this
+    agreement check share one scan) — a PDF whose labels are just the
+    default physical numbering (confirmed on GURPS Magic: 0/241 agreement,
+    correctly falls back to the footer vote) would otherwise put every
+    link a couple of pages off.
+
+    **Reviewed the same way any of this project's own changes are** — not
+    taken on the PR's own reported numbers alone: ran both the unpatched
+    script and the PR's branch against 4 real GURPS 4E books (Characters,
+    Campaigns, High-Tech, Basic Set Fourth Edition Revised) and diffed
+    every row of the CSV report, not just the summary counts. Found a
+    real, confirmed regression, not a theoretical one: Characters and
+    Campaigns share a boilerplate sentence ("...the pages are sequentially
+    numbered; Book 2 starts on p. 337.") explaining that their combined
+    index spans both books. In the *Characters* file specifically,
+    `/PageLabels` labels its trailing Warehouse 23 ad page "337" — Steve
+    Jackson Games' distributor apparently continues the boxed set's
+    overall page count into the ad insert even though the real "Book 2"
+    content is a different PDF entirely — and the PR's label lookup
+    trusted that match unconditionally, linking "p. 337" straight to the
+    ad page instead of leaving it correctly unresolved (as the unpatched
+    footer vote already did). A second, quieter side effect surfaced the
+    same way: High-Tech's own Index has entries like `"Mk 1, 130, 137."`
+    and `"S&W Number 1, 94."` — weapon model names ending in a bare "1"
+    that word-tokenization already misreads as its own citation number (a
+    pre-existing ambiguity, not something this PR introduced) — which the
+    unpatched footer vote never surfaces as a link because it never
+    establishes page 1 (the credits page, no footer number at all) as a
+    valid target in the first place. The PR's label lookup does reach
+    page 1, so these previously-silently-skipped mis-parses became real,
+    wrong links to the credits page.
+
+    **Root cause, in both cases: the whole-book agreement check says the
+    labels are trustworthy in aggregate, but says nothing about any one
+    specific label entry** — an individual `/PageLabels` entry can exist
+    on a page with no printed folio at all (a title/credits page counted
+    as the nominal start of a numbering run, or, as in the Characters
+    case, a back-matter page whose label has nothing to do with that
+    volume's real content). Fixed by keeping only the label entries whose
+    *target page's own footer* directly confirms that same number —
+    `{n: i for n, i in label_to_index.items() if (i, n) in obs_set}` —
+    so an unconfirmed number now falls through to "out of range" exactly
+    like it already did before this lookup path existed, rather than
+    resolving via a label with nothing backing it. Verified with a full
+    re-run of all 4 books: every one of the 4 previously-added links this
+    uncovered is now correctly skipped again, and a complete row-by-row
+    CSV diff against the pre-PR baseline shows **zero** remaining
+    differences across all four files — this restores the exact prior
+    safe behavior for every single-volume book tested while leaving the
+    label-based lookup fully intact for whatever real multi-offset
+    combined file motivated the PR in the first place.
+
+    The fix was posted as a PR review comment first (with the full diff
+    and verification results), then, once the contributor agreed with the
+    reasoning, pushed directly onto the contributor's own branch (GitHub's
+    "allow edits from maintainers" setting, enabled on this PR) rather
+    than merged unmodified and fixed up afterward — keeping the
+    contributor's own commit history intact and the fix visible as part
+    of their PR rather than a follow-up patch. That push initially failed
+    with a permission error under the GitHub identity the working
+    environment happened to be authenticated as at the time; it succeeded
+    once the correct account (`plazman30`, the actual maintainer of this
+    repo) was logged in instead — worth remembering that "maintainer can
+    modify" is enforced per-account, not per-repository-URL: a remote URL
+    that *names* an account (`https://plazman30@github.com/...`) doesn't
+    make git or `gh` actually authenticate as that account; only the
+    credential/token actually logged in does, and pushing to a
+    contributor's fork specifically will fail silently-until-attempted if
+    those two don't match. The contributor independently diffed the
+    pushed commit against the posted patch (confirmed identical) before
+    approving. **General lesson, extending bug #19's own: a fix that
+    generalizes a known limitation (single-offset assumption) to more
+    cases than the original one-off workaround covered is still worth the
+    same real-book regression testing as any other change to this
+    matching logic — a more general mechanism has more surface area for
+    exactly this class of "technically-present-but-unconfirmed metadata"
+    bug to hide in, not less.**
 
 ## Testing / verification methodology
 
