@@ -9,6 +9,14 @@ or /PageLabels — those get dropped during its full re-interpretation of
 the input. This script runs Ghostscript for the color conversion, then
 uses pikepdf to copy metadata and page labels back in from the original.
 
+Ghostscript can also leave an image's original JPEG2000 (/JPXDecode)
+encoding completely untouched if it decides that image's colorspace is
+already gray-compatible — confirmed on a real book whose images use a
+single-channel ink-separation colorspace. Since JPX support is spotty
+across PDF viewers/e-readers, this script guarantees none survive: any
+image still JPX-encoded after Ghostscript's pass gets properly decoded
+(respecting its real colorspace, not just its raw bytes) and re-encoded.
+
 Usage:
     python3 pdf_grayscale.py input.pdf
     python3 pdf_grayscale.py input.pdf output.pdf
@@ -31,6 +39,7 @@ import tempfile
 from pathlib import Path
 
 import pikepdf
+import pymupdf as fitz  # PyMuPDF -- `import fitz` is the deprecated alias
 
 
 def run_ghostscript(src: Path, dst: Path) -> None:
@@ -55,6 +64,94 @@ def run_ghostscript(src: Path, dst: Path) -> None:
         raise RuntimeError(f"Ghostscript exited with code {result.returncode}")
 
 
+def strip_residual_jpx(pdf_path: Path, pdf: pikepdf.Pdf) -> int:
+    """Decode and re-encode any image Ghostscript's grayscale conversion
+    left as JPXDecode (JPEG2000), guaranteeing none survive in the final
+    output regardless of what Ghostscript itself decided to do with it.
+
+    Confirmed on a real book (Tools for Frontier Living): Ghostscript
+    passes an image through completely untouched -- original encoding
+    included -- whenever it decides the image's colorspace is already
+    compatible with the target (here, Gray), rather than only skipping
+    unnecessary *pixel* conversion the way "already correct, don't
+    touch" sounds like it should. The 5 survivors there use a single-
+    channel `DeviceN [/Black] -> DeviceGray` colorspace (a "how much
+    black ink" separation, not a direct luminosity value) that
+    Ghostscript treats as already-gray-compatible and skips re-encoding
+    entirely -- exactly the kind of image this conversion is supposed to
+    guarantee is safely viewable, not exempt from it. Two other real
+    JPX-source books in this same test corpus (Adventure Class Ships,
+    the 1e Core Rulebook) convert every one of their JPX images away
+    from JPX on their own with no help needed -- this only ever touches
+    whatever Ghostscript didn't already handle.
+
+    **First version of this function decoded the raw JPX codestream
+    directly (`fitz.Pixmap(obj.read_raw_bytes())`) and used its samples
+    as-is, and produced a fully inverted image -- confirmed by rendering
+    the fixed output and comparing it side by side with the original
+    rather than just checking the filter was gone.** A `DeviceN [/Black]`
+    separation's raw sample is an *ink amount* (0 = no ink = white,
+    255 = full ink = black) -- the exact opposite sense of a plain
+    DeviceGray sample (0 = black, 255 = white) -- and turning ink-amount
+    bytes directly into gray-level bytes with no transform in between
+    is a literal photographic negative of the real image. Fixed by
+    opening the same file fresh with PyMuPDF and building the pixmap via
+    `fitz.Pixmap(doc, xref)` (MuPDF's own image decoder, which returns
+    the correct *native* colorspace, `DeviceN` tint-transform function
+    included) and then converting that through `fitz.Pixmap(fitz.csGRAY,
+    pix)`, which is what actually evaluates the tint-transform function
+    into a real gray value rather than assuming the raw bytes already
+    are one. Re-verified against the real book: the previously-inverted
+    illustration now renders visually identical to the original grayscale
+    art (confirmed by rendering both and comparing, not just re-running
+    the filter-count check), and this same two-step conversion is safe
+    to apply unconditionally to a non-DeviceN JPX image too (Gray stays
+    Gray, RGB collapses to Gray the normal way), so it isn't special-
+    cased to the one colorspace that actually needed it.
+
+    Returns how many images were converted."""
+    targets = []
+    for obj in pdf.objects:
+        try:
+            if obj.get("/Subtype") != "/Image":
+                continue
+            filt = obj.get("/Filter")
+            filters = filt if isinstance(filt, pikepdf.Array) else [filt]
+            if not any("JPX" in str(f) for f in filters):
+                continue
+        except Exception:
+            continue
+        targets.append(obj.objgen[0])
+
+    if not targets:
+        return 0
+
+    doc = fitz.open(pdf_path)
+    try:
+        for objnum in targets:
+            pix = fitz.Pixmap(doc, objnum)
+            if pix.alpha:
+                raise RuntimeError(
+                    "Residual JPX image carries an embedded alpha channel -- "
+                    "not seen in any real file this was tested against, and "
+                    "stripping alpha here without testing against a real "
+                    "example risks silently corrupting the image data."
+                )
+            gray = fitz.Pixmap(fitz.csGRAY, pix)
+
+            obj = pdf.get_object((objnum, 0))
+            obj.write(gray.samples, filter=pikepdf.Name("/FlateEncode"))
+            obj.ColorSpace = pikepdf.Name("/DeviceGray")
+            obj.BitsPerComponent = 8
+            if "/DecodeParms" in obj:
+                del obj.DecodeParms
+            if "/Decode" in obj:
+                del obj.Decode
+    finally:
+        doc.close()
+    return len(targets)
+
+
 def restore_metadata_and_labels(original: Path, converted: Path, final: Path,
                                  keep_producer: bool,
                                  keep_color_pages: "set[int]" = frozenset()) -> None:
@@ -75,6 +172,10 @@ def restore_metadata_and_labels(original: Path, converted: Path, final: Path,
         # Restore page labels (e.g. roman numerals for front matter)
         if "/PageLabels" in src.Root:
             out.Root.PageLabels = out.copy_foreign(src.Root.PageLabels)
+
+        jpx_fixed = strip_residual_jpx(converted, out)
+        if jpx_fixed:
+            print(f"  Re-encoded {jpx_fixed} image(s) Ghostscript left as JPEG2000 (JPXDecode)")
 
         if keep_color_pages:
             if len(out.pages) != len(src.pages):
